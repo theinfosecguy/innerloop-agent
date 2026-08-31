@@ -81,9 +81,15 @@ test('official skills CLI exposes the portable primary skill and three focused s
   const temporaryRoot = await mkdtemp(resolve(tmpdir(), 'innerloop-skills-cli-'));
   try {
     const packageDocument = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
-    const discoverySkill = await readFile(resolve(root, 'discovery/skill.md'), 'utf8');
+    const releaseManifest = JSON.parse(await readFile(resolve(root, 'release-manifest.json'), 'utf8'));
+    const discoverySkill = await readFile(resolve(root, 'discovery/SKILL.md'), 'utf8');
     assert.equal(packageDocument.devDependencies?.skills, '1.5.23');
-    const frontmatter = parseSkillFrontmatter(discoverySkill, 'discovery/skill.md');
+    assert.equal(
+      releaseManifest.surfaces?.find((surface) => surface.name === 'skill')?.packagePath,
+      'discovery/SKILL.md',
+      'the portable primary skill must use the case-sensitive Agent Skills filename',
+    );
+    const frontmatter = parseSkillFrontmatter(discoverySkill, 'discovery/SKILL.md');
     assert.deepEqual(Object.keys(frontmatter).sort(), [
       'compatibility',
       'description',

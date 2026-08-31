@@ -140,7 +140,7 @@
     {
       "name": "skill",
       "path": "/skill.md",
-      "packagePath": "discovery/skill.md",
+      "packagePath": "discovery/SKILL.md",
       "url": "https://innerloop-gateway.neagley-dev.workers.dev/skill.md",
       "contentType": "text/markdown; charset=utf-8",
       "sha256": "b97ee1acd8150d7d675f311529ad744671ea4a4e21016d6005db6bd8d61a68ba",

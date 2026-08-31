@@ -169,7 +169,7 @@ test('README contains a copyable exact A2A v1.0 discovery request', async () => 
 });
 
 test('generated discovery skill keeps the production client download bounded', async () => {
-  const skill = await readFile(resolve(root, 'discovery/skill.md'), 'utf8');
+  const skill = await readFile(resolve(root, 'discovery/SKILL.md'), 'utf8');
   assert.match(skill, /curl --disable --proto '=https' --tlsv1\.2 --fail --show-error \\\n\s+--connect-timeout 10 \\\n\s+--max-time 60[\s\S]*?--retry-max-time 60[\s\S]*?--max-filesize 262144/u);
 });
 

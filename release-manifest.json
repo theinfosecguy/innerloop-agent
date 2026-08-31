@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "name": "innerloop",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "license": "MIT-0",
   "author": {
     "name": "Keshav Malik",
@@ -25,7 +25,7 @@
     "security": "https://innerloop.neagley-dev.workers.dev/security",
     "iconPng": "https://innerloop-gateway.neagley-dev.workers.dev/assets/marketplace-icon.png",
     "logoSvg": "https://innerloop-gateway.neagley-dev.workers.dev/assets/innerloop-mark.svg",
-    "client": "https://innerloop-gateway.neagley-dev.workers.dev/clients/v1.3.0/innerloop-client.mjs"
+    "client": "https://innerloop-gateway.neagley-dev.workers.dev/clients/v1.3.1/innerloop-client.mjs"
   },
   "clients": [
     {
@@ -69,13 +69,24 @@
       ],
       "sha256": "00bcd9372a30b8f4f2a0ed1024757267e2c1266c7cd6461ab59a62b13a8528c9",
       "released": true
+    },
+    {
+      "version": "1.3.1",
+      "path": "/clients/v1.3.1/innerloop-client.mjs",
+      "aliasPath": "/innerloop-client.mjs",
+      "apiOrigin": "https://innerloop-api.neagley-dev.workers.dev",
+      "validationApiOrigins": [
+        "https://agent-journal-api-preview.neagley-dev.workers.dev"
+      ],
+      "sha256": "8d2d1dfe876b7306a45c31bd3b23a5255d0630ad1db7f3fb544c0d504a4b7406",
+      "released": true
     }
   ],
   "bundledClient": {
     "path": "scripts/innerloop-client.mjs",
-    "version": "1.3.0",
-    "sha256": "00bcd9372a30b8f4f2a0ed1024757267e2c1266c7cd6461ab59a62b13a8528c9",
-    "size": 102693
+    "version": "1.3.1",
+    "sha256": "8d2d1dfe876b7306a45c31bd3b23a5255d0630ad1db7f3fb544c0d504a4b7406",
+    "size": 102740
   },
   "assets": [
     {
@@ -94,7 +105,7 @@
   "manifests": [
     {
       "path": "plugin.json",
-      "sha256": "33e6cb100e81617319456c9418b6a7d7f8090c0ce383b7ab8b553595c8f9e2b1",
+      "sha256": "510f742237d58233a566538f4a504003c149645ff29b34cda3990e55d14e3fc7",
       "size": 573
     },
     {
@@ -104,12 +115,12 @@
     },
     {
       "path": "server.json",
-      "sha256": "93ee3791e7869c77353dde3173bfc9f9b4be9bdcadbfde41f05ec2f9b26cbc9d",
+      "sha256": "33577d5638c5e3479e3db9397b04952ff6b8fdd94e1458d052f895a44a920445",
       "size": 994
     },
     {
       "path": "listing.json",
-      "sha256": "5dcb619f547aefdbd861fe1a04040ee17f09e0b3ab21050b8db9a087f8732a17",
+      "sha256": "89b121eeceaee43db602888092f11949b306ea42db1de57026767364a2a89957",
       "size": 855
     }
   ],
@@ -128,13 +139,13 @@
         },
         {
           "uri": "skill://innerloop-onboard/references/client-integrity.json",
-          "digest": "sha256:284e5d4ff26feb23443ac3daa8f280c7dac7d8ab69d4eef7834bc982de20849f",
+          "digest": "sha256:2d5bd890326b63fa22bd87109c3af628d394f187dd1dd9696e6f9edf9cd846e8",
           "size": 217
         },
         {
           "uri": "skill://innerloop-onboard/scripts/innerloop-client.mjs",
-          "digest": "sha256:00bcd9372a30b8f4f2a0ed1024757267e2c1266c7cd6461ab59a62b13a8528c9",
-          "size": 102693
+          "digest": "sha256:8d2d1dfe876b7306a45c31bd3b23a5255d0630ad1db7f3fb544c0d504a4b7406",
+          "size": 102740
         },
         {
           "uri": "skill://innerloop-onboard/scripts/verify-client.mjs",
@@ -157,13 +168,13 @@
         },
         {
           "uri": "skill://innerloop-reflect/references/client-integrity.json",
-          "digest": "sha256:284e5d4ff26feb23443ac3daa8f280c7dac7d8ab69d4eef7834bc982de20849f",
+          "digest": "sha256:2d5bd890326b63fa22bd87109c3af628d394f187dd1dd9696e6f9edf9cd846e8",
           "size": 217
         },
         {
           "uri": "skill://innerloop-reflect/scripts/innerloop-client.mjs",
-          "digest": "sha256:00bcd9372a30b8f4f2a0ed1024757267e2c1266c7cd6461ab59a62b13a8528c9",
-          "size": 102693
+          "digest": "sha256:8d2d1dfe876b7306a45c31bd3b23a5255d0630ad1db7f3fb544c0d504a4b7406",
+          "size": 102740
         },
         {
           "uri": "skill://innerloop-reflect/scripts/verify-client.mjs",
@@ -246,6 +257,7 @@
         "1.1.0",
         "1.2.0",
         "1.3.0",
+        "1.3.1",
         "unknown"
       ]
     },

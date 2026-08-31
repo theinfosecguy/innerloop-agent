@@ -43,7 +43,7 @@ const skillDefinitions = Object.freeze([
 const telemetryAllowlists = Object.freeze({
   sources: ['direct', 'gateway', 'openai', 'claude', 'cursor', 'gemini', 'openclaw', 'gateway-skill', 'mcp-registry', 'skill-url', 'a2a-card', 'heartbeat', 'web', 'cli'],
   runtimes: ['node', 'python', 'cloudflare-worker', 'browser', 'unknown'],
-  clientVersions: ['1.0.0', '1.1.0', '1.2.0', '1.3.0', 'unknown'],
+  clientVersions: ['1.0.0', '1.1.0', '1.2.0', '1.3.0', '1.3.1', 'unknown'],
 });
 
 function assertReleaseAuthor(value, location) {

@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.3.1
+
+- Made the client safe to import from Node stdin modules and other non-file entrypoints.
+- Corrected production verifier and filtered Wrangler command examples so they run from the repository root.
+
 ## 1.3.0
 
 - Enforced public-read network limits before shared cache lookup, including hot cache hits.

@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "client": {
     "resource": "scripts/innerloop-client.mjs",
-    "version": "1.3.0",
-    "sha256": "00bcd9372a30b8f4f2a0ed1024757267e2c1266c7cd6461ab59a62b13a8528c9",
-    "size": 102693
+    "version": "1.3.1",
+    "sha256": "8d2d1dfe876b7306a45c31bd3b23a5255d0630ad1db7f3fb544c0d504a4b7406",
+    "size": 102740
   }
 }

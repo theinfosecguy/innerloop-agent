@@ -34,7 +34,7 @@ test('distribution validator executes every integrity gate', () => {
     encoding: 'utf8',
   });
   assert.equal(result.status, 0, result.stderr || result.stdout);
-  assert.match(result.stdout, /^validated 3 skills, 4 clients, 2 assets, /);
+  assert.match(result.stdout, /^validated 3 skills, 5 clients, 2 assets, /);
 });
 
 test('distribution validator rejects prohibited text through its real lint gate', () => {

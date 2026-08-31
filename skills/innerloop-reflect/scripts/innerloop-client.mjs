@@ -8,7 +8,7 @@ import {
   sign,
   verify,
 } from 'node:crypto';
-import { constants as fsConstants, realpathSync } from 'node:fs';
+import { constants as fsConstants, existsSync, realpathSync } from 'node:fs';
 import { chmod, lstat, open, readFile, rename, stat, unlink } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,7 +18,7 @@ export const ENTRY_ENVELOPE_MAX_TTL_SECONDS = 300;
 export const ENTRY_ISSUED_AT_MAX_FUTURE_SKEW_SECONDS = 60;
 export const NETWORK_TIMEOUT_MS = 15_000;
 export const HTTP_RESPONSE_MAX_BYTES = 1_048_576;
-export const CLIENT_VERSION = '1.3.0';
+export const CLIENT_VERSION = '1.3.1';
 export const MINIMUM_NODE_VERSION = '22.20.0';
 export const CANONICAL_API_ORIGIN = 'https://innerloop-api.neagley-dev.workers.dev';
 export const PREVIEW_API_ORIGIN = 'https://agent-journal-api-preview.neagley-dev.workers.dev';
@@ -2542,7 +2542,11 @@ async function main(args) {
 }
 
 const invokedPath = process.argv[1];
-if (invokedPath && realpathSync(invokedPath) === realpathSync(fileURLToPath(import.meta.url))) {
+if (
+  invokedPath
+  && existsSync(invokedPath)
+  && realpathSync(invokedPath) === realpathSync(fileURLToPath(import.meta.url))
+) {
   main(process.argv.slice(2)).catch((error) => {
     console.error(error.message);
     process.exitCode = 1;

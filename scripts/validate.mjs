@@ -4,6 +4,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import { extname, dirname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Ajv2020 from 'ajv/dist/2020.js';
+import { parse as parseYaml } from 'yaml';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 function assert(condition, message) {
@@ -14,12 +15,12 @@ function hash(value) {
   return createHash('sha256').update(value).digest('hex');
 }
 
-function skillMetadataVersion(source, location) {
+function skillFrontmatter(source, location) {
   const frontmatter = source.match(/^---\n([\s\S]*?)\n---(?:\n|$)/u);
   assert(frontmatter, `${location} is missing YAML frontmatter`);
-  const version = frontmatter[1].match(/^  version:\s*"([^"]+)"\s*$/mu);
-  assert(version, `${location} is missing metadata.version`);
-  return version[1];
+  const parsed = parseYaml(frontmatter[1]);
+  assert(parsed && typeof parsed === 'object' && !Array.isArray(parsed), `${location} frontmatter must be an object`);
+  return parsed;
 }
 
 async function filesBelow(directory) {
@@ -52,7 +53,7 @@ const skillDefinitions = Object.freeze([
 const telemetryAllowlists = Object.freeze({
   sources: ['direct', 'gateway', 'openai', 'claude', 'cursor', 'gemini', 'openclaw', 'gateway-skill', 'mcp-registry', 'skill-url', 'a2a-card', 'heartbeat', 'web', 'cli'],
   runtimes: ['node', 'python', 'cloudflare-worker', 'browser', 'unknown'],
-  clientVersions: ['1.0.0', '1.1.0', '1.2.0', '1.3.0', '1.3.1', '1.3.2', '1.3.3', '1.3.4', 'unknown'],
+  clientVersions: ['1.0.0', '1.1.0', '1.2.0', '1.3.0', '1.3.1', '1.3.2', '1.3.3', '1.3.4', '1.4.0', 'unknown'],
 });
 
 function assertReleaseAuthor(value, location) {
@@ -97,9 +98,21 @@ for (const skill of manifest.skills) {
   const configured = skillDefinitions.find((candidate) => candidate.name === name);
   assert(configured, `${name} is not in the focused skill set`);
   const skillSource = await readFile(resolve(root, configured.directory, 'SKILL.md'), 'utf8');
+  const parsedFrontmatter = skillFrontmatter(skillSource, skill.uri);
   assert(
-    skillMetadataVersion(skillSource, skill.uri) === packageDocument.version,
+    parsedFrontmatter.metadata?.version === packageDocument.version,
     `${skill.uri} metadata version differs from package version`,
+  );
+  assert(
+    parsedFrontmatter.metadata
+      && typeof parsedFrontmatter.metadata === 'object'
+      && !Array.isArray(parsedFrontmatter.metadata)
+      && Object.values(parsedFrontmatter.metadata).every((value) => typeof value === 'string'),
+    `${skill.uri} metadata must be a string-to-string map`,
+  );
+  assert(
+    JSON.stringify(skill.frontmatter) === JSON.stringify(parsedFrontmatter),
+    `${skill.uri} manifest frontmatter is not a verbatim field-for-field copy`,
   );
   assert(
     skillSource.includes('read-only MCP tool and public HTTP interfaces are platform independent'),
@@ -117,7 +130,11 @@ for (const skill of manifest.skills) {
     assert(/requires macOS or Linux/iu.test(skillSource), `${skill.uri} supported platform boundary is missing`);
     assert(skillSource.includes('outside source control'), `${skill.uri} source-control boundary is missing`);
     assert(skillSource.includes('installed skill director'), `${skill.uri} install-directory boundary is missing`);
-    assert(skillSource.includes('INNERLOOP_DIR'), `${skill.uri} operator state directory is missing`);
+    assert(skillSource.includes('INNERLOOP_PROFILE_DIR'), `${skill.uri} operator profile directory is missing`);
+    assert(skillSource.includes('--profile-dir "$INNERLOOP_PROFILE_DIR"'), `${skill.uri} explicit profile directory option is missing`);
+    assert(skillSource.includes('--profile-name "$INNERLOOP_PROFILE_NAME"'), `${skill.uri} explicit profile name option is missing`);
+    assert(!skillSource.includes('--identity '), `${skill.uri} still uses the legacy identity-file option`);
+    assert(!skillSource.includes('--ledger '), `${skill.uri} still uses the legacy ledger-file option`);
   }
   assert(uris.has(skill.uri), `${skill.uri} is missing SKILL.md`);
   if (configured.clientResource) {
@@ -177,6 +194,78 @@ for (const asset of manifest.assets) {
   assert(asset.publicPath === `/${asset.path}`, `${asset.path} public path mismatch`);
   assert(asset.sha256 === hash(source) && asset.size === source.byteLength, `${asset.path} integrity mismatch`);
 }
+
+const expectedDocuments = Object.freeze([
+  { name: 'agentGuide', filename: 'agent-guide.md', contentType: 'text/markdown; charset=utf-8' },
+  { name: 'a2aContract', filename: 'a2a-contract.json', contentType: 'application/json; charset=utf-8' },
+]);
+assert(Array.isArray(manifest.documents) && manifest.documents.length === expectedDocuments.length, 'release documents are incomplete');
+for (const expected of expectedDocuments) {
+  const document = manifest.documents.find((candidate) => candidate.name === expected.name);
+  assert(document, `release document ${expected.name} is missing`);
+  const publicPath = `/docs/v${manifest.version}/${expected.filename}`;
+  const source = await readFile(resolve(root, document.packagePath));
+  assert(document.packagePath === publicPath.slice(1), `${expected.name} package path mismatch`);
+  assert(document.publicPath === publicPath, `${expected.name} public path mismatch`);
+  assert(document.url === manifest.urls[expected.name], `${expected.name} URL differs from release manifest`);
+  assert(new URL(document.url).pathname === publicPath, `${expected.name} URL path mismatch`);
+  assert(document.contentType === expected.contentType, `${expected.name} content type mismatch`);
+  assert(document.sha256 === hash(source) && document.size === source.byteLength, `${expected.name} integrity mismatch`);
+}
+
+assert(Array.isArray(manifest.surfaces) && manifest.surfaces.length === 5, 'release discovery surfaces are incomplete');
+for (const surface of manifest.surfaces) {
+  const source = await readFile(resolve(root, surface.packagePath));
+  assert(surface.url === manifest.urls[surface.name], `${surface.name} discovery URL differs from release manifest`);
+  assert(surface.sha256 === hash(source) && surface.size === source.byteLength, `${surface.name} discovery integrity mismatch`);
+}
+const skillSurface = manifest.surfaces.find((surface) => surface.name === 'skill');
+const metadataSurface = manifest.surfaces.find((surface) => surface.name === 'skillMetadata');
+assert(skillSurface?.size <= 12 * 1024, 'skill.md exceeds the 12 KiB discovery budget');
+assert(metadataSurface?.size <= 8 * 1024, 'skill.json exceeds the 8 KiB discovery budget');
+const primarySkillSource = await readFile(resolve(root, skillSurface.packagePath), 'utf8');
+const primaryFrontmatter = skillFrontmatter(primarySkillSource, skillSurface.packagePath);
+assert(
+  JSON.stringify(Object.keys(primaryFrontmatter).sort())
+    === JSON.stringify(['compatibility', 'description', 'license', 'metadata', 'name']),
+  'primary skill frontmatter contains unsupported or missing fields',
+);
+assert(primaryFrontmatter.name === 'innerloop', 'primary skill name is not canonical');
+assert(
+  typeof primaryFrontmatter.description === 'string' && primaryFrontmatter.description.length > 0,
+  'primary skill description is empty',
+);
+assert(primaryFrontmatter.license === 'MIT-0', 'primary skill license is not canonical');
+assert(
+  typeof primaryFrontmatter.compatibility === 'string' && primaryFrontmatter.compatibility.length > 0,
+  'primary skill compatibility is empty',
+);
+assert(
+  primaryFrontmatter.metadata
+    && typeof primaryFrontmatter.metadata === 'object'
+    && !Array.isArray(primaryFrontmatter.metadata)
+    && Object.values(primaryFrontmatter.metadata).every((value) => typeof value === 'string'),
+  'primary skill metadata must be a string-to-string map',
+);
+assert(primaryFrontmatter.metadata.version === packageDocument.version, 'primary skill metadata version differs from package version');
+const discoveryMetadata = await json('discovery/skill.json');
+assert(discoveryMetadata.files?.agent_guide?.url === manifest.urls.agentGuide, 'skill metadata agent guide URL differs from release manifest');
+assert(discoveryMetadata.files?.a2a_contract?.url === manifest.urls.a2aContract, 'skill metadata A2A contract URL differs from release manifest');
+assert(discoveryMetadata.protocols?.a2a?.operation_contracts_url === manifest.urls.a2aContract, 'skill metadata detailed A2A contract URL differs from release manifest');
+assert(!Object.hasOwn(discoveryMetadata.protocols.a2a, 'operation_contracts'), 'skill metadata must not inline detailed A2A contracts');
+const a2aContract = await json(`docs/v${manifest.version}/a2a-contract.json`);
+assert(a2aContract.version === manifest.version, 'versioned A2A contract version differs from release manifest');
+assert(a2aContract.examples_executable === false, 'versioned A2A contract must mark examples non-executable');
+assert(Object.keys(a2aContract.operations ?? {}).length === 6, 'versioned A2A contract operation set is incomplete');
+assert(
+  Object.values(a2aContract.operations).every((contract) => contract.data_part_example_executable === false),
+  'every versioned A2A data example must be non-executable',
+);
+const discoveryCard = await json('discovery/.well-known/agent-card.json');
+assert(
+  discoveryCard.skills?.every((skill) => skill.examples?.every((example) => example.startsWith('NON-EXECUTABLE EXAMPLE.'))),
+  'every Agent Card example must be labeled non-executable',
+);
 
 const genericMcp = await json('.mcp.json');
 assert(genericMcp.mcpServers?.innerloop?.type === 'http', 'generic MCP transport is not HTTP');
@@ -274,4 +363,4 @@ if (validationProbe !== undefined) {
   assert(!unresolved.some((fragment) => validationProbe.includes(fragment)), 'validation probe contains an unresolved placeholder');
 }
 
-console.log(`validated ${manifest.skills.length} skills, ${manifest.clients.length} clients, ${manifest.assets.length} assets, and ${files.length} package files`);
+console.log(`validated ${manifest.skills.length} skills, ${manifest.clients.length} clients, ${manifest.assets.length} assets, ${manifest.documents.length} versioned documents, and ${files.length} package files`);

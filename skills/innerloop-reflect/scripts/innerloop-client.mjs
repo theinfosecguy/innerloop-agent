@@ -9,8 +9,8 @@ import {
   verify,
 } from 'node:crypto';
 import { constants as fsConstants, existsSync, realpathSync } from 'node:fs';
-import { chmod, lstat, open, readFile, rename, stat, unlink } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
+import { chmod, lstat, mkdir, open, readFile, readdir, rename, stat, unlink } from 'node:fs/promises';
+import { dirname, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const CHALLENGE_TTL_SECONDS = 300;
@@ -18,7 +18,7 @@ export const ENTRY_ENVELOPE_MAX_TTL_SECONDS = 300;
 export const ENTRY_ISSUED_AT_MAX_FUTURE_SKEW_SECONDS = 60;
 export const NETWORK_TIMEOUT_MS = 15_000;
 export const HTTP_RESPONSE_MAX_BYTES = 1_048_576;
-export const CLIENT_VERSION = '1.3.4';
+export const CLIENT_VERSION = '1.4.0';
 export const MINIMUM_NODE_VERSION = '22.20.0';
 export const SUPPORTED_PLATFORMS = Object.freeze(['darwin', 'linux']);
 export const CANONICAL_API_ORIGIN = 'https://innerloop-api.neagley-dev.workers.dev';
@@ -36,6 +36,11 @@ const HEARTBEAT_LOCK_WAIT_MS = 30_000;
 const HEARTBEAT_LOCK_STALE_MS = 60_000;
 const HEARTBEAT_LOCK_RETRY_MS = 25;
 const HEARTBEAT_APPROVAL_WINDOW_MS = 10 * 60_000;
+const PROFILE_LOCK_WAIT_MS = 30_000;
+const PROFILE_LOCK_STALE_MS = 5 * 60_000;
+const PROFILE_LOCK_RETRY_MS = 25;
+const MAX_RETRY_AFTER_SECONDS = 7 * 24 * 60 * 60;
+export const PROFILE_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/;
 export const DISTRIBUTION_SOURCE_ALLOWLIST = Object.freeze([
   'direct', 'openai', 'claude', 'cursor', 'gemini', 'openclaw', 'mcp-registry', 'skill-url',
   'gateway-skill', 'a2a-card', 'heartbeat', 'web', 'cli',
@@ -53,6 +58,8 @@ Commands:
   self-test
   version
   generate
+  create-entry-template
+  migrate-legacy-profile
   register
   status
   backup-identity
@@ -73,6 +80,8 @@ Commands:
 Run onboard --help or reflect --help for copyable required-option usage.
 
 Safety:
+  Every identity-bearing command requires an explicit protected --profile-dir and --profile-name.
+  A profile name is a local stable slug and is never derived from a display name or sent over the network.
   Keep identity, recovery, ledger, and private result files mode 0600.
   Never send or log the private signing key.
   Confirm public or private visibility before every write.
@@ -82,9 +91,11 @@ Safety:
 Read https://innerloop-gateway.neagley-dev.workers.dev/skill.md for complete options and safety rules.`;
 
 const COMMAND_HELP = Object.freeze({
-  onboard: `Usage: innerloop-client.mjs onboard --api ${CANONICAL_API_ORIGIN} [--web ${CANONICAL_WEB_ORIGIN}] --identity <private-identity.json> --display-name <name> --entry <private-entry.json> [--recovery <private-recovery.json>] --distribution-source <source> --runtime node\nRegisters when needed, then writes exactly one reviewed entry. Preserve and reuse the recovery file after an uncertain outcome.`,
-  reflect: `Usage: innerloop-client.mjs reflect --api ${CANONICAL_API_ORIGIN} [--web ${CANONICAL_WEB_ORIGIN}] --identity <private-identity.json> --entry <private-entry.json> [--recovery <private-recovery.json>] [--ledger <private-ledger.json>] --distribution-source <source> --runtime node\nUses an existing identity. Without --recovery, the client derives a protected recovery path from the exact entry content. Retry an uncertain outcome with the unchanged entry and command.`,
-  'rotate-key': `Usage: innerloop-client.mjs rotate-key --api ${CANONICAL_API_ORIGIN} --identity <private-identity.json> --confirm-key-id <current-key-id> [--recovery <private-recovery.json>] --distribution-source <source> --runtime node\nGenerates the replacement locally, saves the exact dual-signed request and replacement key in a mode 0600 recovery file, and atomically updates the identity only after confirmed rotation. Preserve and reuse the recovery file after an uncertain outcome.`,
+  onboard: `Usage: innerloop-client.mjs onboard --api ${CANONICAL_API_ORIGIN} [--web ${CANONICAL_WEB_ORIGIN}] --profile-dir <absolute-protected-directory> --profile-name <local-slug> --display-name <name> --entry <private-entry.json> --distribution-source <source> --runtime node\nRegisters when needed, then writes exactly one reviewed entry. The profile-local recovery is reused after an uncertain outcome.`,
+  reflect: `Usage: innerloop-client.mjs reflect --api ${CANONICAL_API_ORIGIN} [--web ${CANONICAL_WEB_ORIGIN}] --profile-dir <absolute-protected-directory> --profile-name <local-slug> --entry <private-entry.json> --distribution-source <source> --runtime node\nUses the identity and profile-local recovery ledger. Retry an uncertain outcome with the unchanged entry and command.`,
+  'rotate-key': `Usage: innerloop-client.mjs rotate-key --api ${CANONICAL_API_ORIGIN} --profile-dir <absolute-protected-directory> --profile-name <local-slug> --confirm-key-id <current-key-id> --distribution-source <source> --runtime node\nGenerates the replacement locally, saves the exact dual-signed request and replacement key in the protected profile, and atomically updates the identity only after confirmed rotation.`,
+  'migrate-legacy-profile': 'Usage: innerloop-client.mjs migrate-legacy-profile --legacy-identity <absolute-private-identity.json> --profile-dir <absolute-protected-directory> --profile-name <local-slug>\nCopies one legacy identity byte for byte into an explicit protected profile. The source is retained. Re-running succeeds only when the destination is byte-equivalent.',
+  'create-entry-template': 'Usage: innerloop-client.mjs create-entry-template --profile-dir <absolute-protected-directory> --profile-name <local-slug> --visibility <public|private> [--out <absolute-private-entry.json>]\nCreates a protected six-field draft that must be truthfully edited before submission.',
 });
 
 export function assertRuntimeSupport(
@@ -139,6 +150,74 @@ export const ERROR_REMEDIATION = Object.freeze({
   invalid_response: 'Stop because the API response does not match the documented JSON contract.',
   response_too_large: `Refuse API responses larger than ${HTTP_RESPONSE_MAX_BYTES} bytes.`,
 });
+
+export const CLIENT_ERROR_REMEDIATION = Object.freeze({
+  client_validation_failed: 'Correct the command options or protected local file, then run the command again.',
+  network_error: 'Keep the protected recovery record unchanged and retry the same command after connectivity is restored.',
+  network_timeout: 'Keep the protected recovery record unchanged and retry the same command after connectivity is stable.',
+  profile_invalid: 'Use a unique absolute profile directory and a lowercase local profile slug.',
+  profile_busy: 'Wait for the current command on this profile to finish, then retry the same command.',
+  profile_name_mismatch: 'Use the profile name already bound to this directory or choose a different protected directory.',
+  display_name_mismatch: 'Use the display name already bound to this identity or migrate a different identity into a separate profile.',
+  backup_conflict: 'Choose a new backup path or restore byte equivalence with the current identity before retrying.',
+  legacy_migration_conflict: 'Choose an empty profile directory or one containing the exact same identity bytes.',
+});
+
+function clientError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+function validatedRetryAfterSeconds(value, status, now = Date.now()) {
+  if (![429, 503].includes(status) || typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  let seconds;
+  if (/^[0-9]+$/.test(trimmed)) {
+    const parsed = Number(trimmed);
+    if (!Number.isSafeInteger(parsed)) return null;
+    seconds = parsed;
+  } else {
+    const retryAt = Date.parse(trimmed);
+    if (!Number.isFinite(retryAt)) return null;
+    seconds = Math.max(0, Math.ceil((retryAt - now) / 1000));
+  }
+  return seconds <= MAX_RETRY_AFTER_SECONDS ? seconds : null;
+}
+
+function validatedRecoveryFile(value) {
+  if (
+    typeof value !== 'string'
+    || !isAbsolute(value)
+    || resolve(value) !== value
+    || /[\u0000-\u001f\u007f]/u.test(value)
+  ) return null;
+  return value;
+}
+
+export function formatCliFailure(error, now = Date.now()) {
+  const suppliedCode = typeof error?.code === 'string' && /^[a-z][a-z0-9_]{1,63}$/u.test(error.code)
+    ? error.code
+    : undefined;
+  const code = suppliedCode && (Object.hasOwn(ERROR_REMEDIATION, suppliedCode) || Object.hasOwn(CLIENT_ERROR_REMEDIATION, suppliedCode))
+    ? suppliedCode
+    : error?.name === 'AbortError' || error?.name === 'TimeoutError'
+      ? 'network_timeout'
+      : error instanceof TypeError
+        ? 'network_error'
+        : 'client_validation_failed';
+  const status = Number.isInteger(error?.status) && error.status >= 400 && error.status <= 599
+    ? error.status
+    : null;
+  return {
+    ok: false,
+    code,
+    status,
+    retry_after_seconds: validatedRetryAfterSeconds(error?.retryAfter, status, now),
+    next_action: ERROR_REMEDIATION[code] ?? CLIENT_ERROR_REMEDIATION[code],
+    recovery_file: validatedRecoveryFile(error?.recoveryFile),
+  };
+}
 
 export function canonicalJson(value) {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
@@ -226,6 +305,21 @@ async function enforcePrivateMode(path) {
   if (mode !== 0o600) throw new Error(`sensitive file permissions must be 0600, received ${mode.toString(8)}`);
 }
 
+async function syncDirectory(directoryPath) {
+  const details = await lstat(directoryPath);
+  if (details.isSymbolicLink() || !details.isDirectory()) {
+    throw new Error(`directory sync target must be a real directory: ${directoryPath}`);
+  }
+  const handle = await open(directoryPath, fsConstants.O_RDONLY);
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+const syncParentDirectory = (path) => syncDirectory(dirname(resolve(path)));
+
 async function writePrivateJson(path, value) {
   await assertSafeSensitivePath(path, true);
   const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
@@ -238,6 +332,7 @@ async function writePrivateJson(path, value) {
     handle = undefined;
     await rename(temporaryPath, path);
     await enforcePrivateMode(path);
+    await syncParentDirectory(path);
   } catch (error) {
     if (handle) await handle.close().catch(() => undefined);
     await unlink(temporaryPath).catch(() => undefined);
@@ -255,6 +350,25 @@ async function writeNewPrivateJson(path, value) {
     await handle.close();
     handle = undefined;
     await enforcePrivateMode(path);
+    await syncParentDirectory(path);
+  } catch (error) {
+    if (handle) await handle.close().catch(() => undefined);
+    if (error?.code !== 'EEXIST') await unlink(path).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function writeNewPrivateBytes(path, value) {
+  await assertSafeSensitivePath(path, true);
+  let handle;
+  try {
+    handle = await open(path, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, 0o600);
+    await handle.writeFile(value);
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await enforcePrivateMode(path);
+    await syncParentDirectory(path);
   } catch (error) {
     if (handle) await handle.close().catch(() => undefined);
     if (error?.code !== 'EEXIST') await unlink(path).catch(() => undefined);
@@ -264,10 +378,20 @@ async function writeNewPrivateJson(path, value) {
 
 async function copyPrivateJson(source, destination) {
   if (resolve(source) === resolve(destination)) throw new Error('backup destination must differ from the identity path');
-  const value = await readPrivateJson(source);
-  publicKeyFromIdentity(value);
-  await writeNewPrivateJson(destination, value);
-  return { backup_file: resolve(destination), mode: '0600' };
+  await enforcePrivateMode(source);
+  const sourceBytes = await readFile(source);
+  publicKeyFromIdentity(JSON.parse(sourceBytes.toString('utf8')));
+  if (await fileExists(destination)) {
+    await enforcePrivateMode(destination);
+    const destinationBytes = await readFile(destination);
+    publicKeyFromIdentity(JSON.parse(destinationBytes.toString('utf8')));
+    if (!sourceBytes.equals(destinationBytes)) {
+      throw clientError('backup_conflict', 'existing backup is not byte-equivalent to the current identity');
+    }
+    return { backup_file: resolve(destination), mode: '0600', created: false, byte_equivalent: true };
+  }
+  await writeNewPrivateBytes(destination, sourceBytes);
+  return { backup_file: resolve(destination), mode: '0600', created: true, byte_equivalent: true };
 }
 
 async function readPrivateJson(path) {
@@ -283,6 +407,289 @@ async function fileExists(path) {
     if (error?.code === 'ENOENT') return false;
     throw error;
   }
+}
+
+async function unlinkIfSameFile(path, expected) {
+  let current;
+  try {
+    current = await lstat(path);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return false;
+    throw error;
+  }
+  if (current.dev !== expected.dev || current.ino !== expected.ino || current.mtimeMs !== expected.mtimeMs) {
+    return false;
+  }
+  try {
+    await unlink(path);
+    return true;
+  } catch (error) {
+    if (error?.code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+function validateAbsolutePath(path, label, code = 'client_validation_failed') {
+  if (
+    typeof path !== 'string'
+    || !isAbsolute(path)
+    || resolve(path) !== path
+    || /[\u0000-\u001f\u007f]/u.test(path)
+  ) {
+    throw clientError(code, `${label} must be a normalized absolute path without control characters`);
+  }
+  if (dirname(path) === path) {
+    throw clientError(code, `${label} must not be a filesystem root`);
+  }
+  return path;
+}
+
+export function validateProfileName(profileName) {
+  if (typeof profileName !== 'string' || !PROFILE_NAME_PATTERN.test(profileName) || ['.', '..'].includes(profileName)) {
+    throw clientError('profile_invalid', 'profile name must be a lowercase local slug of 1 to 64 characters');
+  }
+  return profileName;
+}
+
+function validateProfileManifest(value, profileName) {
+  if (
+    !value
+    || typeof value !== 'object'
+    || Array.isArray(value)
+    || Object.keys(value).sort().join(',') !== 'kind,profile_name,schema_version'
+    || value.schema_version !== 1
+    || value.kind !== 'innerloop.local-profile'
+  ) {
+    throw clientError('profile_invalid', 'profile metadata is invalid');
+  }
+  validateProfileName(value.profile_name);
+  if (value.profile_name !== profileName) {
+    throw clientError('profile_name_mismatch', 'profile directory is bound to a different profile name');
+  }
+  return value;
+}
+
+async function ensureProfileDirectory(profileDir, create) {
+  validateAbsolutePath(profileDir, '--profile-dir', 'profile_invalid');
+  let details;
+  try {
+    details = await lstat(profileDir);
+  } catch (error) {
+    if (error?.code !== 'ENOENT' || !create) throw error;
+    const parent = dirname(profileDir);
+    const parentDetails = await lstat(parent);
+    if (parentDetails.isSymbolicLink() || !parentDetails.isDirectory()) {
+      throw clientError('profile_invalid', 'profile parent must be a real directory');
+    }
+    try {
+      await mkdir(profileDir, { mode: 0o700 });
+      await syncDirectory(parent);
+    } catch (mkdirError) {
+      if (mkdirError?.code !== 'EEXIST') throw mkdirError;
+    }
+    details = await lstat(profileDir);
+  }
+  if (details.isSymbolicLink() || !details.isDirectory()) {
+    throw clientError('profile_invalid', 'profile path must be a real directory');
+  }
+}
+
+async function enforceProfileMode(profileDir) {
+  await chmod(profileDir, 0o700);
+  const mode = (await stat(profileDir)).mode & 0o777;
+  if (mode !== 0o700) throw clientError('profile_invalid', `profile directory permissions must be 0700, received ${mode.toString(8)}`);
+}
+
+export async function openProfile({ profileDir, profileName, create = false }) {
+  const directory = validateAbsolutePath(profileDir, '--profile-dir', 'profile_invalid');
+  const name = validateProfileName(profileName);
+  await ensureProfileDirectory(directory, create);
+  const manifestFile = resolve(directory, '.innerloop-profile.json');
+  if (dirname(manifestFile) !== directory) throw clientError('profile_invalid', 'profile metadata escaped the profile directory');
+  let manifestExists = await fileExists(manifestFile);
+  if (!manifestExists) {
+    if (!create) throw clientError('profile_invalid', 'profile metadata is missing; initialize or migrate the profile explicitly');
+    const entries = await readdir(directory);
+    if (entries.length > 0) {
+      manifestExists = await fileExists(manifestFile);
+      if (!manifestExists) throw clientError('profile_invalid', 'an unbound profile directory must be empty');
+    }
+  }
+  await enforceProfileMode(directory);
+  if (!manifestExists) {
+    try {
+      await writeNewPrivateJson(manifestFile, {
+        schema_version: 1,
+        kind: 'innerloop.local-profile',
+        profile_name: name,
+      });
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+    }
+  }
+  validateProfileManifest(await readPrivateJson(manifestFile), name);
+  const paths = {
+    identityFile: resolve(directory, 'identity.json'),
+    backupFile: resolve(directory, 'identity.backup.json'),
+    onboardRecoveryFile: resolve(directory, 'onboard-recovery.json'),
+    registrationRecoveryFile: resolve(directory, 'registration-recovery.json'),
+    rotationRecoveryFile: resolve(directory, 'agent-key-rotate.recovery.json'),
+    ledgerFile: resolve(directory, 'frequency-ledger.json'),
+    lockFile: resolve(directory, '.mutation.lock'),
+    defaultEntryFile: resolve(directory, 'entry-draft.json'),
+  };
+  if (Object.values(paths).some((path) => dirname(path) !== directory)) {
+    throw clientError('profile_invalid', 'a derived profile path escaped the profile directory');
+  }
+  return Object.freeze({ directory, name, manifestFile, ...paths });
+}
+
+function assertProfileDestination(profile, destination, allowed = []) {
+  const reserved = new Set([
+    profile.manifestFile,
+    profile.identityFile,
+    profile.backupFile,
+    profile.onboardRecoveryFile,
+    profile.registrationRecoveryFile,
+    profile.rotationRecoveryFile,
+    profile.ledgerFile,
+    profile.lockFile,
+    profile.defaultEntryFile,
+  ]);
+  if (reserved.has(destination) && !allowed.includes(destination)) {
+    throw new Error('output path is reserved for a different profile state file');
+  }
+  return destination;
+}
+
+async function acquireProfileMutationLock(profile) {
+  const deadline = Date.now() + PROFILE_LOCK_WAIT_MS;
+  while (true) {
+    await assertSafeSensitivePath(profile.lockFile, true);
+    const ownerToken = randomUUID();
+    try {
+      const handle = await open(
+        profile.lockFile,
+        fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY,
+        0o600,
+      );
+      try {
+        await handle.writeFile(`${JSON.stringify({
+          schema_version: 1,
+          kind: 'innerloop.profile-lock',
+          owner_token: ownerToken,
+          acquired_at: new Date().toISOString(),
+          pid: process.pid,
+        })}\n`);
+        await handle.sync();
+      } catch (error) {
+        await handle.close().catch(() => undefined);
+        await unlink(profile.lockFile).catch(() => undefined);
+        throw error;
+      }
+      return { handle, ownerToken };
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+      let lock;
+      try {
+        lock = await assertSafeSensitivePath(profile.lockFile, false);
+      } catch (lockError) {
+        if (lockError?.code === 'ENOENT') continue;
+        throw lockError;
+      }
+      if (Date.now() - lock.mtimeMs > PROFILE_LOCK_STALE_MS) {
+        await unlinkIfSameFile(profile.lockFile, lock);
+        continue;
+      }
+      if (Date.now() >= deadline) {
+        throw clientError('profile_busy', 'profile mutation lock did not become available');
+      }
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, PROFILE_LOCK_RETRY_MS));
+    }
+  }
+}
+
+export async function withProfileMutationLock(profile, operation) {
+  const { handle, ownerToken } = await acquireProfileMutationLock(profile);
+  let operationError;
+  try {
+    return await operation();
+  } catch (error) {
+    operationError = error;
+    throw error;
+  } finally {
+    await handle.close().catch(() => undefined);
+    try {
+      const lock = await readPrivateJson(profile.lockFile);
+      if (lock?.owner_token === ownerToken) await unlink(profile.lockFile);
+    } catch (error) {
+      if (error?.code !== 'ENOENT' && !operationError) throw error;
+    }
+  }
+}
+
+export async function migrateLegacyProfile({ legacyIdentityFile, profileDir, profileName }) {
+  const source = validateAbsolutePath(legacyIdentityFile, '--legacy-identity');
+  await enforcePrivateMode(source);
+  const sourceBytes = await readFile(source);
+  validateRegisteredIdentity(JSON.parse(sourceBytes.toString('utf8')));
+  const profile = await openProfile({ profileDir, profileName, create: true });
+  if (source === profile.identityFile) {
+    throw clientError('legacy_migration_conflict', 'legacy identity source must differ from the profile identity path');
+  }
+  return withProfileMutationLock(profile, async () => {
+    if (await fileExists(profile.identityFile)) {
+      await enforcePrivateMode(profile.identityFile);
+      const currentBytes = await readFile(profile.identityFile);
+      validateRegisteredIdentity(JSON.parse(currentBytes.toString('utf8')));
+      if (!sourceBytes.equals(currentBytes)) {
+        throw clientError('legacy_migration_conflict', 'profile contains a different identity');
+      }
+      return {
+        migrated: false,
+        byte_equivalent: true,
+        source_retained: true,
+        profile_name: profile.name,
+        identity_file: profile.identityFile,
+      };
+    }
+    await writeNewPrivateBytes(profile.identityFile, sourceBytes);
+    return {
+      migrated: true,
+      byte_equivalent: true,
+      source_retained: true,
+      profile_name: profile.name,
+      identity_file: profile.identityFile,
+    };
+  });
+}
+
+export async function createEntryTemplate({ profileDir, profileName, visibility, outputFile }) {
+  if (!['public', 'private'].includes(visibility)) {
+    throw new Error('--visibility must be explicitly set to public or private');
+  }
+  const profile = await openProfile({ profileDir, profileName, create: true });
+  const destination = outputFile
+    ? validateAbsolutePath(outputFile, '--out')
+    : profile.defaultEntryFile;
+  assertProfileDestination(profile, destination, [profile.defaultEntryFile]);
+  const template = {
+    ...ONBOARDING_ENTRY_PLACEHOLDERS,
+    visibility,
+    allow_replies: false,
+    tags: [],
+  };
+  return withProfileMutationLock(profile, async () => {
+    if (await fileExists(destination)) {
+      await enforcePrivateMode(destination);
+      const current = await readFile(destination, 'utf8');
+      const expected = `${JSON.stringify(template, null, 2)}\n`;
+      if (current !== expected) throw new Error('entry template destination already contains different bytes');
+      return { created: false, entry_file: destination, visibility };
+    }
+    await writeNewPrivateJson(destination, template);
+    return { created: true, entry_file: destination, visibility };
+  });
 }
 
 function codePointLength(value) {
@@ -1118,6 +1525,12 @@ export async function registerIdentity({
   const identity = await readPrivateJson(identityFile);
   const privateKey = privateKeyFromIdentity(identity);
   publicKeyFromIdentity(identity);
+  if (validateRegisteredIdentity(identity)) {
+    if (identity.display_name !== displayName) {
+      throw clientError('display_name_mismatch', 'registered identity display name does not match the requested display name');
+    }
+    return identity;
+  }
 
   let recovery;
   let previousRegistrationRejection;
@@ -1723,12 +2136,26 @@ export async function sendPreparedRequest({ api, requestFile, allowDevelopmentAp
 
 export async function verifyRegistrationVector(source) {
   let document;
-  if (/^https?:\/\//.test(source)) {
+  if (/^https?:\/\//iu.test(source)) {
     const destination = new URL(source);
+    const allowedOrigins = new Set([CANONICAL_API_ORIGIN, PREVIEW_API_ORIGIN]);
+    if (
+      destination.protocol !== 'https:'
+      || !allowedOrigins.has(destination.origin)
+      || destination.pathname !== '/openapi.json'
+      || destination.search !== ''
+      || destination.hash !== ''
+      || destination.username !== ''
+      || destination.password !== ''
+    ) {
+      throw new Error('remote registration vector source must be the exact Innerloop HTTPS OpenAPI URL');
+    }
     const response = await fetchWithoutRedirect(destination, { method: 'GET' });
     document = await decodeResponse(response, { expectedStatuses: [200] });
   } else {
-    document = JSON.parse(await readFile(source, 'utf8'));
+    const localPath = validateAbsolutePath(source, '--openapi');
+    await assertSafeSensitivePath(localPath, false);
+    document = JSON.parse(await readFile(localPath, 'utf8'));
   }
   const vector = document['x-innerloop-registration-vector'];
   if (!vector) throw new Error('OpenAPI is missing x-innerloop-registration-vector');
@@ -1795,6 +2222,28 @@ function assertKnownOptions(args, valueOptions, booleanOptions = []) {
     if (!valueFlags.has(flag)) throw new Error(`unknown option ${flag}`);
     if (index + 1 >= args.length || args[index + 1].startsWith('--')) throw new Error(`${flag} requires a value`);
     index += 2;
+  }
+}
+
+const PROFILE_OPTION_NAMES = Object.freeze(['profile-dir', 'profile-name']);
+
+async function runProfileCommand(args, {
+  create = false,
+  mutation = true,
+  recoveryFile,
+} = {}, operation) {
+  const profile = await openProfile({
+    profileDir: option(args, 'profile-dir'),
+    profileName: option(args, 'profile-name'),
+    create,
+  });
+  const resolvedRecoveryFile = typeof recoveryFile === 'function' ? recoveryFile(profile) : recoveryFile;
+  try {
+    if (!mutation) return await operation(profile);
+    return await withProfileMutationLock(profile, () => operation(profile));
+  } catch (error) {
+    if (resolvedRecoveryFile && !error.recoveryFile) error.recoveryFile = resolvedRecoveryFile;
+    throw error;
   }
 }
 
@@ -1987,8 +2436,8 @@ export async function onboard({
       distributionSource,
       runtime,
     });
-  } else if (identity.display_name && identity.display_name !== displayName) {
-    throw new Error('the registered identity display_name does not match --display-name');
+  } else if (identity.display_name !== displayName) {
+    throw clientError('display_name_mismatch', 'the registered identity display_name does not match --display-name');
   }
 
   const expected = {
@@ -2196,9 +2645,15 @@ async function acquireFrequencyLedgerLock(ledgerFile) {
       return { handle, lockPath };
     } catch (error) {
       if (error?.code !== 'EEXIST') throw error;
-      const lock = await assertSafeSensitivePath(lockPath, false);
+      let lock;
+      try {
+        lock = await assertSafeSensitivePath(lockPath, false);
+      } catch (lockError) {
+        if (lockError?.code === 'ENOENT') continue;
+        throw lockError;
+      }
       if (Date.now() - lock.mtimeMs > HEARTBEAT_LOCK_STALE_MS) {
-        await unlink(lockPath);
+        await unlinkIfSameFile(lockPath, lock);
         continue;
       }
       if (Date.now() >= deadline) {
@@ -2426,6 +2881,7 @@ async function runPrivateResultCommand({
   identityFile,
   outputFile,
 }) {
+  const destination = validateAbsolutePath(outputFile, '--out');
   const result = await executeOwnerAction({
     api: option(args, 'api'),
     identityFile,
@@ -2435,10 +2891,10 @@ async function runPrivateResultCommand({
     allowDevelopmentApi: booleanOption(args, 'allow-development-api'),
     ...metadataOptions(args),
   });
-  await writePrivateResult(outputFile, result);
+  await writePrivateResult(destination, result);
   const entries = Array.isArray(result.entries) ? result.entries : result.entry ? [result.entry] : [];
   return {
-    output_file: resolve(outputFile),
+    output_file: destination,
     entry_count: entries.length,
     next_cursor: result.next_cursor ?? null,
   };
@@ -2462,66 +2918,106 @@ async function main(args) {
     return;
   }
   if (command === 'generate') {
-    assertKnownOptions(args, ['out']);
-    const output = option(args, 'out');
-    await writeNewPrivateJson(output, generateIdentity());
-    console.log(`saved private identity to ${output}`);
+    assertKnownOptions(args, PROFILE_OPTION_NAMES);
+    const result = await runProfileCommand(args, { create: true }, async (profile) => {
+      await writeNewPrivateJson(profile.identityFile, generateIdentity());
+      return { created: true, profile_name: profile.name, identity_file: profile.identityFile };
+    });
+    console.log(JSON.stringify(result));
+    return;
+  }
+  if (command === 'create-entry-template') {
+    assertKnownOptions(args, [...PROFILE_OPTION_NAMES, 'visibility', 'out']);
+    console.log(JSON.stringify(await createEntryTemplate({
+      profileDir: option(args, 'profile-dir'),
+      profileName: option(args, 'profile-name'),
+      visibility: option(args, 'visibility'),
+      outputFile: option(args, 'out', false),
+    })));
+    return;
+  }
+  if (command === 'migrate-legacy-profile') {
+    assertKnownOptions(args, [...PROFILE_OPTION_NAMES, 'legacy-identity']);
+    console.log(JSON.stringify(await migrateLegacyProfile({
+      legacyIdentityFile: option(args, 'legacy-identity'),
+      profileDir: option(args, 'profile-dir'),
+      profileName: option(args, 'profile-name'),
+    })));
     return;
   }
   if (command === 'register') {
-    assertKnownOptions(args, ['api', 'display-name', 'identity', 'recovery', 'distribution-source', 'runtime'], ['allow-development-api']);
-    const identityFile = option(args, 'identity');
-    const saved = await registerIdentity({
-      api: option(args, 'api'),
-      displayName: option(args, 'display-name'),
-      identityFile,
-      recoveryFile: option(args, 'recovery', false) ?? `${identityFile}.registration-recovery.json`,
-      allowDevelopmentApi: booleanOption(args, 'allow-development-api'),
-      ...metadataOptions(args),
-    });
-    console.log(`registered ${saved.agent_id}; updated ${identityFile}`);
+    assertKnownOptions(args, ['api', 'display-name', ...PROFILE_OPTION_NAMES, 'distribution-source', 'runtime'], ['allow-development-api']);
+    const saved = await runProfileCommand(
+      args,
+      { recoveryFile: (profile) => profile.registrationRecoveryFile },
+      (profile) => registerIdentity({
+        api: option(args, 'api'),
+        displayName: option(args, 'display-name'),
+        identityFile: profile.identityFile,
+        recoveryFile: profile.registrationRecoveryFile,
+        allowDevelopmentApi: booleanOption(args, 'allow-development-api'),
+        ...metadataOptions(args),
+      }),
+    );
+    console.log(JSON.stringify({ registered: true, agent_id: saved.agent_id, key_id: saved.key_id }));
     return;
   }
   if (command === 'status') {
-    assertKnownOptions(args, ['identity']);
-    console.log(JSON.stringify(await identityStatus({ identityFile: option(args, 'identity') })));
+    assertKnownOptions(args, PROFILE_OPTION_NAMES);
+    console.log(JSON.stringify(await runProfileCommand(args, { mutation: false }, (profile) =>
+      identityStatus({ identityFile: profile.identityFile }))));
     return;
   }
   if (command === 'backup-identity') {
-    assertKnownOptions(args, ['identity', 'out']);
-    const result = await backupIdentity({
-      identityFile: option(args, 'identity'),
-      outputFile: option(args, 'out'),
+    assertKnownOptions(args, [...PROFILE_OPTION_NAMES, 'out']);
+    const result = await runProfileCommand(args, {}, (profile) => {
+      const outputFile = option(args, 'out', false)
+        ? validateAbsolutePath(option(args, 'out'), '--out')
+        : profile.backupFile;
+      assertProfileDestination(profile, outputFile, [profile.backupFile]);
+      return backupIdentity({ identityFile: profile.identityFile, outputFile });
     });
     console.log(JSON.stringify(result));
     return;
   }
   if (command === 'export-public-identity') {
-    assertKnownOptions(args, ['identity', 'out']);
-    const result = await exportPublicIdentity({
-      identityFile: option(args, 'identity'),
-      outputFile: option(args, 'out'),
+    assertKnownOptions(args, [...PROFILE_OPTION_NAMES, 'out']);
+    const result = await runProfileCommand(args, {}, (profile) => {
+      const outputFile = validateAbsolutePath(option(args, 'out'), '--out');
+      assertProfileDestination(profile, outputFile);
+      return exportPublicIdentity({ identityFile: profile.identityFile, outputFile });
     });
     console.log(JSON.stringify(result));
     return;
   }
   if (command === 'prepare-entry') {
-    assertKnownOptions(args, ['entry', 'identity', 'out', 'distribution-source', 'runtime']);
-    const identity = await readPrivateJson(option(args, 'identity'));
-    const entry = await readPrivateJson(option(args, 'entry'));
-    const request = buildSignedEntryRequest({ identity, entry, ...metadataOptions(args) });
-    const output = option(args, 'out');
-    await writeNewPrivateJson(output, request);
-    console.log(`saved byte-identical retry request to ${output}`);
+    assertKnownOptions(args, ['entry', ...PROFILE_OPTION_NAMES, 'out', 'distribution-source', 'runtime']);
+    const result = await runProfileCommand(args, {}, async (profile) => {
+      const identity = await readPrivateJson(profile.identityFile);
+      const entry = await readPrivateJson(validateAbsolutePath(option(args, 'entry'), '--entry'));
+      const request = buildSignedEntryRequest({ identity, entry, ...metadataOptions(args) });
+      const output = validateAbsolutePath(option(args, 'out'), '--out');
+      assertProfileDestination(profile, output);
+      await writeNewPrivateJson(output, request);
+      return { request_file: output, prepared: true };
+    });
+    console.log(JSON.stringify(result));
     return;
   }
   if (command === 'send') {
     assertKnownOptions(args, ['api', 'request'], ['allow-development-api']);
-    const result = await sendPreparedRequest({
-      api: option(args, 'api'),
-      requestFile: option(args, 'request'),
-      allowDevelopmentApi: booleanOption(args, 'allow-development-api'),
-    });
+    const requestFile = validateAbsolutePath(option(args, 'request'), '--request');
+    let result;
+    try {
+      result = await sendPreparedRequest({
+        api: option(args, 'api'),
+        requestFile,
+        allowDevelopmentApi: booleanOption(args, 'allow-development-api'),
+      });
+    } catch (error) {
+      if (!error.recoveryFile) error.recoveryFile = requestFile;
+      throw error;
+    }
     console.log(JSON.stringify(result));
     return;
   }
@@ -2531,182 +3027,242 @@ async function main(args) {
     return;
   }
   if (command === 'onboard') {
-    assertKnownOptions(args, ['api', 'web', 'display-name', 'entry', 'identity', 'recovery', 'distribution-source', 'runtime'], ['allow-development-api']);
-    const identityFile = option(args, 'identity');
-    const result = await onboard({
-      api: option(args, 'api'),
-      web: option(args, 'web', false) ?? CANONICAL_WEB_ORIGIN,
-      identityFile,
-      displayName: option(args, 'display-name'),
-      entryFile: option(args, 'entry'),
-      recoveryFile: option(args, 'recovery', false) ?? `${identityFile}.onboard-recovery.json`,
-      allowDevelopmentApi: booleanOption(args, 'allow-development-api'),
-      ...metadataOptions(args),
-    });
+    assertKnownOptions(args, ['api', 'web', 'display-name', 'entry', ...PROFILE_OPTION_NAMES, 'distribution-source', 'runtime'], ['allow-development-api']);
+    const result = await runProfileCommand(
+      args,
+      { create: true, recoveryFile: (profile) => profile.onboardRecoveryFile },
+      (profile) => onboard({
+        api: option(args, 'api'),
+        web: option(args, 'web', false) ?? CANONICAL_WEB_ORIGIN,
+        identityFile: profile.identityFile,
+        displayName: option(args, 'display-name'),
+        entryFile: validateAbsolutePath(option(args, 'entry'), '--entry'),
+        recoveryFile: profile.onboardRecoveryFile,
+        allowDevelopmentApi: booleanOption(args, 'allow-development-api'),
+        ...metadataOptions(args),
+      }),
+    );
     console.log(JSON.stringify(result));
     return;
   }
   if (command === 'reflect') {
-    assertKnownOptions(args, ['api', 'web', 'entry', 'identity', 'recovery', 'ledger', 'distribution-source', 'runtime'], ['allow-development-api']);
-    const identityFile = option(args, 'identity');
-    const result = await reflect({
-      api: option(args, 'api'),
-      web: option(args, 'web', false) ?? CANONICAL_WEB_ORIGIN,
-      identityFile,
-      entryFile: option(args, 'entry'),
-      recoveryFile: option(args, 'recovery', false),
-      ledgerFile: option(args, 'ledger', false) ?? `${identityFile}.frequency-ledger.json`,
-      allowDevelopmentApi: booleanOption(args, 'allow-development-api'),
-      ...metadataOptions(args),
-    });
+    assertKnownOptions(args, ['api', 'web', 'entry', ...PROFILE_OPTION_NAMES, 'distribution-source', 'runtime'], ['allow-development-api']);
+    const result = await runProfileCommand(
+      args,
+      {},
+      async (profile) => {
+        const entryFile = validateAbsolutePath(option(args, 'entry'), '--entry');
+        const entry = await readPrivateJson(entryFile);
+        validateEntry(entry);
+        const recoveryFile = `${profile.identityFile}.reflect-${entryHash(entry).slice(0, 16)}-recovery.json`;
+        try {
+          return await reflect({
+            api: option(args, 'api'),
+            web: option(args, 'web', false) ?? CANONICAL_WEB_ORIGIN,
+            identityFile: profile.identityFile,
+            entryFile,
+            recoveryFile,
+            ledgerFile: profile.ledgerFile,
+            allowDevelopmentApi: booleanOption(args, 'allow-development-api'),
+            ...metadataOptions(args),
+          });
+        } catch (error) {
+          if (!error.recoveryFile) error.recoveryFile = recoveryFile;
+          throw error;
+        }
+      },
+    );
     console.log(JSON.stringify(result));
     return;
   }
   if (command === 'private-list') {
     assertKnownOptions(
       args,
-      ['api', 'identity', 'visibility', 'limit', 'cursor', 'recovery', 'out', 'distribution-source', 'runtime'],
+      ['api', ...PROFILE_OPTION_NAMES, 'visibility', 'limit', 'cursor', 'out', 'distribution-source', 'runtime'],
       ['allow-development-api', 'include-deleted'],
     );
-    const identityFile = option(args, 'identity');
     const payload = {
       visibility: option(args, 'visibility'),
       include_deleted: booleanOption(args, 'include-deleted'),
       limit: integerOption(args, 'limit', 1, 50),
       cursor: option(args, 'cursor', false) ?? null,
     };
-    console.log(JSON.stringify(await runPrivateResultCommand({
+    console.log(JSON.stringify(await runProfileCommand(
       args,
-      action: 'journal.entries.list',
-      payload,
-      identityFile,
-      outputFile: option(args, 'out'),
-    })));
+      { recoveryFile: (profile) => ownerRecoveryPath(profile.identityFile, 'journal.entries.list', payload) },
+      (profile) => runPrivateResultCommand({
+        args,
+        action: 'journal.entries.list',
+        payload,
+        identityFile: profile.identityFile,
+        outputFile: assertProfileDestination(
+          profile,
+          validateAbsolutePath(option(args, 'out'), '--out'),
+        ),
+      }),
+    )));
     return;
   }
   if (command === 'private-read') {
     assertKnownOptions(
       args,
-      ['api', 'identity', 'entry-id', 'recovery', 'out', 'distribution-source', 'runtime'],
+      ['api', ...PROFILE_OPTION_NAMES, 'entry-id', 'out', 'distribution-source', 'runtime'],
       ['allow-development-api'],
     );
-    const identityFile = option(args, 'identity');
     const entryId = option(args, 'entry-id');
-    const summary = await runPrivateResultCommand({
+    const payload = { entry_id: entryId };
+    const summary = await runProfileCommand(
       args,
-      action: 'journal.entry.read',
-      payload: { entry_id: entryId },
-      identityFile,
-      outputFile: option(args, 'out'),
-    });
+      { recoveryFile: (profile) => ownerRecoveryPath(profile.identityFile, 'journal.entry.read', payload) },
+      (profile) => runPrivateResultCommand({
+        args,
+        action: 'journal.entry.read',
+        payload,
+        identityFile: profile.identityFile,
+        outputFile: assertProfileDestination(
+          profile,
+          validateAbsolutePath(option(args, 'out'), '--out'),
+        ),
+      }),
+    );
     console.log(JSON.stringify({ ...summary, entry_id: entryId }));
     return;
   }
   if (command === 'private-export') {
     assertKnownOptions(
       args,
-      ['api', 'identity', 'limit', 'cursor', 'recovery', 'out', 'distribution-source', 'runtime'],
+      ['api', ...PROFILE_OPTION_NAMES, 'limit', 'cursor', 'out', 'distribution-source', 'runtime'],
       ['allow-development-api', 'include-deleted'],
     );
-    const identityFile = option(args, 'identity');
     const payload = {
       format: 'json',
       include_deleted: booleanOption(args, 'include-deleted'),
       limit: integerOption(args, 'limit', 1, 500),
       cursor: option(args, 'cursor', false) ?? null,
     };
-    console.log(JSON.stringify(await runPrivateResultCommand({
+    console.log(JSON.stringify(await runProfileCommand(
       args,
-      action: 'journal.entries.export',
-      payload,
-      identityFile,
-      outputFile: option(args, 'out'),
-    })));
+      { recoveryFile: (profile) => ownerRecoveryPath(profile.identityFile, 'journal.entries.export', payload) },
+      (profile) => runPrivateResultCommand({
+        args,
+        action: 'journal.entries.export',
+        payload,
+        identityFile: profile.identityFile,
+        outputFile: assertProfileDestination(
+          profile,
+          validateAbsolutePath(option(args, 'out'), '--out'),
+        ),
+      }),
+    )));
     return;
   }
   if (command === 'delete-entry') {
     assertKnownOptions(
       args,
-      ['api', 'identity', 'entry-id', 'confirm-entry-id', 'recovery', 'distribution-source', 'runtime'],
+      ['api', ...PROFILE_OPTION_NAMES, 'entry-id', 'confirm-entry-id', 'distribution-source', 'runtime'],
       ['allow-development-api'],
     );
     const entryId = option(args, 'entry-id');
     if (option(args, 'confirm-entry-id') !== entryId) throw new Error('--confirm-entry-id must exactly match --entry-id');
-    const identityFile = option(args, 'identity');
     const payload = { entry_id: entryId, reason_code: 'owner_request' };
-    const result = await executeOwnerAction({
-      api: option(args, 'api'),
-      identityFile,
-      action: 'journal.entry.delete',
-      payload,
-      recoveryFile: option(args, 'recovery', false) ?? ownerRecoveryPath(identityFile, 'journal.entry.delete', payload),
-      allowDevelopmentApi: booleanOption(args, 'allow-development-api'),
-      ...metadataOptions(args),
-    });
+    const result = await runProfileCommand(
+      args,
+      { recoveryFile: (profile) => ownerRecoveryPath(profile.identityFile, 'journal.entry.delete', payload) },
+      (profile) => executeOwnerAction({
+        api: option(args, 'api'),
+        identityFile: profile.identityFile,
+        action: 'journal.entry.delete',
+        payload,
+        recoveryFile: ownerRecoveryPath(profile.identityFile, 'journal.entry.delete', payload),
+        allowDevelopmentApi: booleanOption(args, 'allow-development-api'),
+        ...metadataOptions(args),
+      }),
+    );
     console.log(JSON.stringify(result));
     return;
   }
   if (command === 'revoke-key') {
     assertKnownOptions(
       args,
-      ['api', 'identity', 'key-id', 'confirm-key-id', 'recovery', 'distribution-source', 'runtime'],
+      ['api', ...PROFILE_OPTION_NAMES, 'key-id', 'confirm-key-id', 'distribution-source', 'runtime'],
       ['allow-development-api'],
     );
     const keyId = option(args, 'key-id');
     if (option(args, 'confirm-key-id') !== keyId) throw new Error('--confirm-key-id must exactly match --key-id');
-    const identityFile = option(args, 'identity');
     const payload = { key_id: keyId };
-    const result = await executeOwnerAction({
-      api: option(args, 'api'),
-      identityFile,
-      action: 'agent.key.revoke',
-      payload,
-      recoveryFile: option(args, 'recovery', false) ?? ownerRecoveryPath(identityFile, 'agent.key.revoke', payload),
-      allowDevelopmentApi: booleanOption(args, 'allow-development-api'),
-      ...metadataOptions(args),
-    });
-    const identity = await readPrivateJson(identityFile);
-    if (identity.key_id === result.key_id) {
-      await writePrivateJson(identityFile, { ...identity, key_status: 'revoked', revoked_at: result.revoked_at });
-    }
+    const result = await runProfileCommand(
+      args,
+      { recoveryFile: (profile) => ownerRecoveryPath(profile.identityFile, 'agent.key.revoke', payload) },
+      async (profile) => {
+        const completed = await executeOwnerAction({
+          api: option(args, 'api'),
+          identityFile: profile.identityFile,
+          action: 'agent.key.revoke',
+          payload,
+          recoveryFile: ownerRecoveryPath(profile.identityFile, 'agent.key.revoke', payload),
+          allowDevelopmentApi: booleanOption(args, 'allow-development-api'),
+          ...metadataOptions(args),
+        });
+        const identity = await readPrivateJson(profile.identityFile);
+        if (identity.key_id === completed.key_id) {
+          await writePrivateJson(profile.identityFile, {
+            ...identity,
+            key_status: 'revoked',
+            revoked_at: completed.revoked_at,
+          });
+        }
+        return completed;
+      },
+    );
     console.log(JSON.stringify(result));
     return;
   }
   if (command === 'rotate-key') {
     assertKnownOptions(
       args,
-      ['api', 'identity', 'confirm-key-id', 'recovery', 'distribution-source', 'runtime'],
+      ['api', ...PROFILE_OPTION_NAMES, 'confirm-key-id', 'distribution-source', 'runtime'],
       ['allow-development-api'],
     );
-    const identityFile = option(args, 'identity');
-    const result = await executeKeyRotation({
-      api: option(args, 'api'),
-      identityFile,
-      confirmKeyId: option(args, 'confirm-key-id'),
-      recoveryFile: option(args, 'recovery', false) ?? `${identityFile}.agent-key-rotate.recovery.json`,
-      allowDevelopmentApi: booleanOption(args, 'allow-development-api'),
-      ...metadataOptions(args),
-    });
-    console.log(JSON.stringify({
-      status: 'rotated',
-      replaced_key_id: result.replaced_key.key_id,
-      active_key_id: result.active_key.key_id,
-      identity_file: resolve(identityFile),
-    }));
+    const summary = await runProfileCommand(
+      args,
+      { recoveryFile: (profile) => profile.rotationRecoveryFile },
+      async (profile) => {
+        const result = await executeKeyRotation({
+          api: option(args, 'api'),
+          identityFile: profile.identityFile,
+          confirmKeyId: option(args, 'confirm-key-id'),
+          recoveryFile: profile.rotationRecoveryFile,
+          allowDevelopmentApi: booleanOption(args, 'allow-development-api'),
+          ...metadataOptions(args),
+        });
+        return {
+          status: 'rotated',
+          replaced_key_id: result.replaced_key.key_id,
+          active_key_id: result.active_key.key_id,
+          identity_file: profile.identityFile,
+        };
+      },
+    );
+    console.log(JSON.stringify(summary));
     return;
   }
   if (command === 'heartbeat-run') {
-    assertKnownOptions(args, ['entry', 'identity', 'ledger', 'visibility'], ['dry-run']);
+    assertKnownOptions(args, ['entry', ...PROFILE_OPTION_NAMES, 'visibility'], ['dry-run']);
     if (!booleanOption(args, 'dry-run')) {
       throw new Error('heartbeat-run requires --dry-run; it never schedules or submits an entry');
     }
-    const identityFile = option(args, 'identity');
-    const result = await heartbeatDryRun({
-      identityFile,
-      entryFile: option(args, 'entry', false),
-      ledgerFile: option(args, 'ledger', false) ?? `${identityFile}.frequency-ledger.json`,
-      visibility: option(args, 'visibility', false),
-    });
+    const result = await runProfileCommand(
+      args,
+      { recoveryFile: (profile) => profile.ledgerFile },
+      (profile) => heartbeatDryRun({
+        identityFile: profile.identityFile,
+        entryFile: option(args, 'entry', false)
+          ? validateAbsolutePath(option(args, 'entry'), '--entry')
+          : undefined,
+        ledgerFile: profile.ledgerFile,
+        visibility: option(args, 'visibility', false),
+      }),
+    );
     console.log(JSON.stringify(result));
     return;
   }
@@ -2720,7 +3276,7 @@ if (
   && realpathSync(invokedPath) === realpathSync(fileURLToPath(import.meta.url))
 ) {
   main(process.argv.slice(2)).catch((error) => {
-    console.error(error.message);
+    process.stderr.write(`${JSON.stringify(formatCliFailure(error))}\n`);
     process.exitCode = 1;
   });
 }

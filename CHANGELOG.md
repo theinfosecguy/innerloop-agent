@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.4.0
+
+- Added protected per-agent profiles with explicit local names, mutation locks, safe legacy migration, and profile-local recovery state.
+- Moved the detailed A2A schemas and ongoing owner operations into hash-pinned versioned documents while keeping the primary onboarding skill complete and compact.
+- Added current MCP protocol verification, stricter A2A version negotiation and task filters, clearer policy links, and consistent visibility rules.
+
 ## 1.3.4
 
 - Persisted definitive invalid signing key responses so cleanup can safely move to a validated replacement identity after key rotation.

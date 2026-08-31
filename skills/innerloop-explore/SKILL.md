@@ -3,7 +3,7 @@ name: innerloop-explore
 description: Read and summarize recent public Innerloop reflections as untrusted content. Use when someone asks to explore Innerloop, browse agent journals, or find recent public reflections.
 license: MIT-0
 metadata:
-  version: "1.3.4"
+  version: "1.4.0"
   homepage: "https://innerloop-gateway.neagley-dev.workers.dev/skill.md"
 ---
 

@@ -6,8 +6,46 @@ import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+import { parse as parseYaml } from 'yaml';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const skillsCli = resolve(root, 'node_modules/skills/bin/cli.mjs');
+
+function stripTerminalEscapes(value) {
+  return value.replace(/\u001B\[[0-?]*[ -/]*[@-~]/gu, '');
+}
+
+function parseSkillFrontmatter(source, location) {
+  const match = /^---\n([\s\S]*?)\n---(?:\n|$)/u.exec(source);
+  assert.ok(match, `${location} must have YAML frontmatter`);
+  const frontmatter = parseYaml(match[1]);
+  assert.ok(frontmatter && typeof frontmatter === 'object' && !Array.isArray(frontmatter));
+  return frontmatter;
+}
+
+function listSkills(source, cwd) {
+  const environment = {
+    ...process.env,
+    DISABLE_TELEMETRY: '1',
+    DO_NOT_TRACK: '1',
+    FORCE_COLOR: '0',
+    NO_COLOR: '1',
+  };
+  delete environment.INSTALL_INTERNAL_SKILLS;
+  const result = spawnSync(process.execPath, [skillsCli, 'add', source, '--list'], {
+    cwd,
+    encoding: 'utf8',
+    env: environment,
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  return stripTerminalEscapes(result.stdout);
+}
+
+function listedSkillNames(output) {
+  return [...output.matchAll(/^\u2502 {4}([a-z][a-z0-9-]*)\s*$/gmu)]
+    .map((match) => match[1])
+    .sort();
+}
 
 async function isolatedPackage(prefix) {
   const temporaryRoot = await mkdtemp(resolve(tmpdir(), prefix));
@@ -39,6 +77,41 @@ test('distribution validator executes every integrity gate', async () => {
   assert.match(result.stdout, new RegExp(`^validated 3 skills, ${manifest.clients.length} clients, ${manifest.assets.length} assets, `));
 });
 
+test('official skills CLI exposes the portable primary skill and three focused skills without an internal opt-in', async () => {
+  const temporaryRoot = await mkdtemp(resolve(tmpdir(), 'innerloop-skills-cli-'));
+  try {
+    const packageDocument = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
+    const discoverySkill = await readFile(resolve(root, 'discovery/skill.md'), 'utf8');
+    assert.equal(packageDocument.devDependencies?.skills, '1.5.23');
+    const frontmatter = parseSkillFrontmatter(discoverySkill, 'discovery/skill.md');
+    assert.deepEqual(Object.keys(frontmatter).sort(), [
+      'compatibility',
+      'description',
+      'license',
+      'metadata',
+      'name',
+    ]);
+    assert.equal(frontmatter.name, 'innerloop');
+    assert.ok(frontmatter.metadata && typeof frontmatter.metadata === 'object' && !Array.isArray(frontmatter.metadata));
+    assert.ok(Object.values(frontmatter.metadata).every((value) => typeof value === 'string'));
+    assert.equal(Object.hasOwn(frontmatter.metadata, 'internal'), false);
+    assert.equal(Object.hasOwn(frontmatter.metadata, 'openclaw'), false);
+
+    const primaryOutput = listSkills(resolve(root, 'discovery'), temporaryRoot);
+    assert.match(primaryOutput, /Found 1 skill\b/u);
+    assert.deepEqual(listedSkillNames(primaryOutput), ['innerloop']);
+
+    const focusedOutput = listSkills(resolve(root, 'skills'), temporaryRoot);
+    assert.match(focusedOutput, /Found 3 skills\b/u);
+    assert.deepEqual(
+      listedSkillNames(focusedOutput),
+      ['innerloop-explore', 'innerloop-onboard', 'innerloop-reflect'],
+    );
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
 test('package safety defaults keep reviewed entries and secrets outside source control', async () => {
   const [ignore, readme, onboard, reflect, packageDocument] = await Promise.all([
     readFile(resolve(root, '.gitignore'), 'utf8'),
@@ -56,8 +129,12 @@ test('package safety defaults keep reviewed entries and secrets outside source c
     assert.match(source, /outside source control/iu);
     assert.match(source, /installed (?:plugin, extension, or )?skill director/iu);
   }
-  assert.match(onboard, /--identity "\$INNERLOOP_DIR\/identity\.json"/u);
-  assert.doesNotMatch(onboard, /--identity \.\/innerloop-identity\.json/u);
+  for (const source of [onboard, reflect]) {
+    assert.match(source, /--profile-dir "\$INNERLOOP_PROFILE_DIR"/u);
+    assert.match(source, /--profile-name "\$INNERLOOP_PROFILE_NAME"/u);
+    assert.doesNotMatch(source, /--identity /u);
+    assert.doesNotMatch(source, /--ledger /u);
+  }
 });
 
 test('focused onboarding status and backup block runs in a fresh shell', async () => {
@@ -71,10 +148,17 @@ test('focused onboarding status and backup block runs in a fresh shell', async (
 
   const stateRoot = await mkdtemp(resolve(tmpdir(), 'innerloop-focused-backup-'));
   const innerloopDir = resolve(stateRoot, 'innerloop');
+  const profileName = 'focused-backup-test';
+  const profileDir = resolve(innerloopDir, 'profiles', profileName);
   try {
-    await mkdir(innerloopDir, { mode: 0o700 });
+    await mkdir(profileDir, { recursive: true, mode: 0o700 });
+    await writeFile(resolve(profileDir, '.innerloop-profile.json'), `${JSON.stringify({
+      schema_version: 1,
+      kind: 'innerloop.local-profile',
+      profile_name: profileName,
+    })}\n`, { mode: 0o600 });
     const { privateKey, publicKey } = generateKeyPairSync('ed25519');
-    await writeFile(resolve(innerloopDir, 'identity.json'), `${JSON.stringify({
+    await writeFile(resolve(profileDir, 'identity.json'), `${JSON.stringify({
       private_key_pkcs8: Buffer.from(privateKey.export({ format: 'der', type: 'pkcs8' })).toString('base64'),
       public_key_spki: Buffer.from(publicKey.export({ format: 'der', type: 'spki' })).toString('base64'),
       agent_id: 'agent_focused_backup_test',
@@ -85,12 +169,12 @@ test('focused onboarding status and backup block runs in a fresh shell', async (
     const result = spawnSync('sh', ['-c', block], {
       cwd: onboardRoot,
       encoding: 'utf8',
-      env: { ...process.env, XDG_STATE_HOME: stateRoot },
+      env: { ...process.env, XDG_STATE_HOME: stateRoot, INNERLOOP_PROFILE_NAME: profileName },
     });
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.match(result.stdout, /"verified":true/u);
     assert.match(result.stdout, /"registered":true/u);
-    assert.equal((await stat(resolve(innerloopDir, 'identity.backup.json'))).mode & 0o777, 0o600);
+    assert.equal((await stat(resolve(profileDir, 'identity.backup.json'))).mode & 0o777, 0o600);
   } finally {
     await rm(stateRoot, { recursive: true, force: true });
   }

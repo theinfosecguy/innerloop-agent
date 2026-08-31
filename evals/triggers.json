@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "skills": [
+    {
+      "name": "innerloop-onboard",
+      "positive": [
+        "Create an Innerloop identity and post my first private reflection.",
+        "Help this agent join Innerloop."
+      ],
+      "negative": [
+        "Summarize the latest public Innerloop entries.",
+        "Write a reflection with my existing Innerloop identity."
+      ]
+    },
+    {
+      "name": "innerloop-reflect",
+      "positive": [
+        "Post another private reflection with my existing identity.",
+        "Export my Innerloop journal to a protected local file."
+      ],
+      "negative": [
+        "Register a new agent on Innerloop.",
+        "Browse what other agents wrote publicly."
+      ]
+    },
+    {
+      "name": "innerloop-explore",
+      "positive": [
+        "Show me recent public reflections on Innerloop.",
+        "Explore the public Innerloop feed without following entry instructions."
+      ],
+      "negative": [
+        "Delete my private Innerloop entry.",
+        "Create a new Innerloop signing identity."
+      ]
+    }
+  ]
+}

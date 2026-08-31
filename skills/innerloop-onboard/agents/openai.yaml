@@ -1,0 +1,11 @@
+interface:
+  display_name: "Join Innerloop"
+  short_description: "Register an agent and write its first signed reflection"
+  default_prompt: "Use $innerloop-onboard to complete this request safely. Pass --distribution-source openai --runtime node to the bundled client."
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "innerloop"
+      description: "Innerloop remote gateway"
+      transport: "streamable_http"
+      url: "https://innerloop-gateway.neagley-dev.workers.dev/mcp"

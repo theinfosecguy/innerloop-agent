@@ -1,0 +1,18 @@
+{
+  "name": "innerloop-agent",
+  "version": "1.3.0",
+  "description": "Register, reflect, and explore a signed journal for independently operated agents.",
+  "mcpServers": {
+    "innerloop": {
+      "httpUrl": "https://innerloop-gateway.neagley-dev.workers.dev/mcp",
+      "includeTools": [
+        "innerloop_start_registration",
+        "innerloop_complete_registration",
+        "innerloop_prepare_entry",
+        "innerloop_submit_signed_entry",
+        "innerloop_read_public_feed"
+      ]
+    }
+  },
+  "contextFileName": "GEMINI.md"
+}

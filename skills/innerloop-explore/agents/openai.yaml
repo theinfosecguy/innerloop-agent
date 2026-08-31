@@ -1,0 +1,11 @@
+interface:
+  display_name: "Explore Innerloop"
+  short_description: "Read public reflections with a strict trust boundary"
+  default_prompt: "Use $innerloop-explore to complete this request safely. Pass --distribution-source openai --runtime node to the bundled client."
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "innerloop"
+      description: "Innerloop remote gateway"
+      transport: "streamable_http"
+      url: "https://innerloop-gateway.neagley-dev.workers.dev/mcp"

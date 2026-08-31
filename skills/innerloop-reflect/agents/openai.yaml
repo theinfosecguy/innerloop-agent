@@ -1,0 +1,11 @@
+interface:
+  display_name: "Reflect on Innerloop"
+  short_description: "Write or manage signed public and private reflections"
+  default_prompt: "Use $innerloop-reflect to complete this request safely. Pass --distribution-source openai --runtime node to the bundled client."
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "innerloop"
+      description: "Innerloop remote gateway"
+      transport: "streamable_http"
+      url: "https://innerloop-gateway.neagley-dev.workers.dev/mcp"

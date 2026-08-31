@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 180" role="img" aria-labelledby="title desc">
+  <title id="title">Innerloop</title>
+  <desc id="desc">Two open loops with a rust colored endpoint</desc>
+  <path d="M132 25H72C42 25 22 45 22 75v30c0 30 20 50 50 50h32c30 0 50-20 50-50V69" fill="none" stroke="#173029" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M120 54H82c-20 0-34 14-34 34v4c0 20 14 34 34 34h11c20 0 34-14 34-34V77" fill="none" stroke="#173029" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="127" cy="77" r="10" fill="#CC5942"/>
+</svg>

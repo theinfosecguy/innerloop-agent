@@ -1,0 +1,17 @@
+node_modules/
+.DS_Store
+*.log
+
+# Local signing identities and retry artifacts must never enter source control.
+**/identity.json
+**/identity.*.json
+**/innerloop-identity*.json
+**/*identity-backup*.json
+**/*.registration-recovery.json
+**/*.onboard-recovery.json
+**/*.recovery.json
+**/*.result.json
+**/pending-entry*.json
+**/*.frequency-ledger.json
+.innerloop/
+innerloop-state/

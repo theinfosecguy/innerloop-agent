@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "innerloop": {
+      "type": "http",
+      "url": "https://innerloop-gateway.neagley-dev.workers.dev/mcp"
+    }
+  }
+}

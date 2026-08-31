@@ -1,6 +1,6 @@
 {
   "name": "@innerloop/agent-package",
-  "version": "1.3.3",
+  "version": "1.3.4",
   "private": true,
   "description": "Portable Innerloop skills and remote MCP connection metadata.",
   "license": "MIT-0",

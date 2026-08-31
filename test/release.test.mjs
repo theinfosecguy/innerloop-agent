@@ -133,10 +133,22 @@ test('publish workflow isolates OIDC behind all uncredentialed release gates', a
   const loginIndex = publishingJob.indexOf('./mcp-publisher login github-oidc');
   const publishCommandIndex = publishingJob.indexOf('./mcp-publisher publish server.json');
   assert.ok(loginIndex > 0 && publishCommandIndex > loginIndex, 'OIDC login must occur immediately before publication');
+
+  const workflowCurlCount = (workflow.match(/\bcurl\s+/gu) ?? []).length;
+  assert.equal(workflowCurlCount, 2, 'publish workflow must have exactly two network downloads');
+  assert.equal((workflow.match(/\bcurl --disable /gu) ?? []).length, workflowCurlCount, 'both publisher downloads must disable ambient curl configuration first');
+  for (const requiredBound of [
+    "--proto '=https' --proto-redir '=https' --tlsv1.2",
+    '--connect-timeout 10 --max-time 120 --max-filesize 50000000',
+    '--retry 3 --retry-delay 1 --retry-max-time 120',
+  ]) {
+    assert.equal((workflow.split(requiredBound).length - 1), 2, `both publisher downloads must include ${requiredBound}`);
+  }
 });
 
 test('CI covers the minimum runtime and active Node releases on Linux and macOS', async () => {
   const workflow = await readFile(resolve(root, '.github/workflows/ci.yml'), 'utf8');
+  assert.match(workflow, /push:\n\s+branches:\n\s+- main\n\s+- "release-candidate\/\*\*"/u, 'candidate SHAs must earn the same push checks before protected-main promotion');
   assert.match(workflow, /os:\n\s+- ubuntu-latest\n\s+- macos-latest/u);
   assert.match(workflow, /node-version:\n\s+- 22\.20\.0\n\s+- 24\.x\n\s+- 26\.x/u);
   assert.match(workflow, /persist-credentials:\s*false/u);
@@ -150,6 +162,15 @@ test('README contains a copyable exact A2A v1.0 discovery request', async () => 
   assert.match(readme, /--header 'A2A-Version: 1\.0'/u);
   assert.match(readme, /"operation": "innerloop\.discovery\.get"/u);
   assert.match(readme, /"acceptedOutputModes": \["application\/json"\]/u);
+  const readmeCurlCount = (readme.match(/^curl\s+/gmu) ?? []).length;
+  assert.equal(readmeCurlCount, 2, 'README must have exactly two curl examples');
+  assert.equal((readme.match(/^curl --disable --proto '=https' --tlsv1\.2/gmu) ?? []).length, readmeCurlCount, 'both A2A examples must disable ambient curl configuration and require HTTPS');
+  assert.equal((readme.match(/--connect-timeout 5 --max-time 20 --max-filesize 1048576/gu) ?? []).length, 2, 'both A2A examples must bound connection time, total time, and response size');
+});
+
+test('generated discovery skill keeps the production client download bounded', async () => {
+  const skill = await readFile(resolve(root, 'discovery/skill.md'), 'utf8');
+  assert.match(skill, /curl --disable --proto '=https' --tlsv1\.2 --fail --show-error \\\n\s+--connect-timeout 10 \\\n\s+--max-time 60[\s\S]*?--retry-max-time 60[\s\S]*?--max-filesize 262144/u);
 });
 
 test('public install commands pin the package release instead of moving main', async () => {

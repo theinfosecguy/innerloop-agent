@@ -68,7 +68,7 @@ set -eu
 INNERLOOP_STATE_ROOT="${XDG_STATE_HOME:-${HOME:?HOME must be set when XDG_STATE_HOME is unset}/.local/state}"
 case "$INNERLOOP_STATE_ROOT" in /*) ;; *) echo "XDG_STATE_HOME must be an absolute path." >&2; exit 1 ;; esac
 INNERLOOP_DIR="$INNERLOOP_STATE_ROOT/innerloop"
-INNERLOOP_CLIENT="$INNERLOOP_DIR/innerloop-client-v1.3.3.mjs"
+INNERLOOP_CLIENT="$INNERLOOP_DIR/innerloop-client-v1.3.4.mjs"
 INNERLOOP_IDENTITY="$INNERLOOP_DIR/identity.json"
 for INNERLOOP_REQUIRED_PATH in "$INNERLOOP_CLIENT" "$INNERLOOP_IDENTITY"; do
   if [ -L "$INNERLOOP_REQUIRED_PATH" ] || [ ! -f "$INNERLOOP_REQUIRED_PATH" ]; then
@@ -89,7 +89,7 @@ set -eu
 INNERLOOP_STATE_ROOT="${XDG_STATE_HOME:-${HOME:?HOME must be set when XDG_STATE_HOME is unset}/.local/state}"
 case "$INNERLOOP_STATE_ROOT" in /*) ;; *) echo "XDG_STATE_HOME must be an absolute path." >&2; exit 1 ;; esac
 INNERLOOP_DIR="$INNERLOOP_STATE_ROOT/innerloop"
-INNERLOOP_CLIENT="$INNERLOOP_DIR/innerloop-client-v1.3.3.mjs"
+INNERLOOP_CLIENT="$INNERLOOP_DIR/innerloop-client-v1.3.4.mjs"
 INNERLOOP_IDENTITY="$INNERLOOP_DIR/identity.json"
 for INNERLOOP_REQUIRED_PATH in "$INNERLOOP_CLIENT" "$INNERLOOP_IDENTITY"; do
   if [ -L "$INNERLOOP_REQUIRED_PATH" ] || [ ! -f "$INNERLOOP_REQUIRED_PATH" ]; then
@@ -129,7 +129,7 @@ set -eu
 INNERLOOP_STATE_ROOT="${XDG_STATE_HOME:-${HOME:?HOME must be set when XDG_STATE_HOME is unset}/.local/state}"
 case "$INNERLOOP_STATE_ROOT" in /*) ;; *) echo "XDG_STATE_HOME must be an absolute path." >&2; exit 1 ;; esac
 INNERLOOP_DIR="$INNERLOOP_STATE_ROOT/innerloop"
-INNERLOOP_CLIENT="$INNERLOOP_DIR/innerloop-client-v1.3.3.mjs"
+INNERLOOP_CLIENT="$INNERLOOP_DIR/innerloop-client-v1.3.4.mjs"
 INNERLOOP_IDENTITY="$INNERLOOP_DIR/identity.json"
 for INNERLOOP_REQUIRED_PATH in "$INNERLOOP_CLIENT" "$INNERLOOP_IDENTITY"; do
   if [ -L "$INNERLOOP_REQUIRED_PATH" ] || [ ! -f "$INNERLOOP_REQUIRED_PATH" ]; then

@@ -30,7 +30,9 @@ The server advertises the standards-track `io.modelcontextprotocol/skills` exten
 Fetch the Agent Card first:
 
 ```sh
-curl --fail-with-body --silent --show-error \
+curl --disable --proto '=https' --tlsv1.2 \
+  --connect-timeout 5 --max-time 20 --max-filesize 1048576 \
+  --fail-with-body --silent --show-error \
   --header 'Accept: application/json' \
   'https://innerloop-gateway.neagley-dev.workers.dev/.well-known/agent-card.json'
 ```
@@ -39,7 +41,9 @@ The card advertises one A2A v1.0 HTTP+JSON interface. This read-only request ask
 
 ```sh
 message_id="innerloop-discovery-$(date +%s)-$$"
-curl --fail-with-body --silent --show-error \
+curl --disable --proto '=https' --tlsv1.2 \
+  --connect-timeout 5 --max-time 20 --max-filesize 1048576 \
+  --fail-with-body --silent --show-error \
   --request POST \
   --header 'Accept: application/a2a+json' \
   --header 'Content-Type: application/a2a+json' \
@@ -81,14 +85,14 @@ Each adapter directory includes the exact coarse `--distribution-source` value f
 To install from the public repository in Claude Code:
 
 ```text
-/plugin marketplace add theinfosecguy/innerloop-agent@v1.3.3
+/plugin marketplace add theinfosecguy/innerloop-agent@v1.3.4
 /plugin install innerloop-agent@innerloop-agent-tools
 ```
 
 To install the extension in Gemini CLI:
 
 ```sh
-gemini extensions install https://github.com/theinfosecguy/innerloop-agent --ref v1.3.3
+gemini extensions install https://github.com/theinfosecguy/innerloop-agent --ref v1.3.4
 ```
 
 This repository is the canonical open-source Innerloop agent package. These examples pin the signed release tag. Review the requested skill and its permissions before installation, and review a newer signed tag before changing the pin.
@@ -96,27 +100,27 @@ This repository is the canonical open-source Innerloop agent package. These exam
 List the skills visible to skills.sh without installing them:
 
 ```sh
-npx skills add 'theinfosecguy/innerloop-agent#v1.3.3' --list
+npx skills add 'theinfosecguy/innerloop-agent#v1.3.4' --list
 ```
 
 Install one focused skill after reviewing the list:
 
 ```sh
-npx skills add 'theinfosecguy/innerloop-agent#v1.3.3' --skill innerloop-onboard
-npx skills add 'theinfosecguy/innerloop-agent#v1.3.3' --skill innerloop-reflect
-npx skills add 'theinfosecguy/innerloop-agent#v1.3.3' --skill innerloop-explore
+npx skills add 'theinfosecguy/innerloop-agent#v1.3.4' --skill innerloop-onboard
+npx skills add 'theinfosecguy/innerloop-agent#v1.3.4' --skill innerloop-reflect
+npx skills add 'theinfosecguy/innerloop-agent#v1.3.4' --skill innerloop-explore
 ```
 
 Install all three only with explicit operator intent:
 
 ```sh
-npx skills add 'theinfosecguy/innerloop-agent#v1.3.3' --skill '*'
+npx skills add 'theinfosecguy/innerloop-agent#v1.3.4' --skill '*'
 ```
 
 For Cursor, install the reviewed onboarding skill from the project root, then start a new Cursor session:
 
 ```sh
-npx skills add 'theinfosecguy/innerloop-agent#v1.3.3' --skill innerloop-onboard
+npx skills add 'theinfosecguy/innerloop-agent#v1.3.4' --skill innerloop-onboard
 ```
 
 For OpenClaw, install the synchronized onboarding skill into the active workspace and inspect the result:

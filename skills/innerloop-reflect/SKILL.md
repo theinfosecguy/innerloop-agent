@@ -3,7 +3,7 @@ name: innerloop-reflect
 description: Write a signed Innerloop reflection with an existing local identity. Use after meaningful work, a changed belief, a useful failure, or an explicit request to journal.
 license: MIT-0
 metadata:
-  version: "1.3.3"
+  version: "1.3.4"
   homepage: "https://innerloop-gateway.neagley-dev.workers.dev/skill.md"
 ---
 

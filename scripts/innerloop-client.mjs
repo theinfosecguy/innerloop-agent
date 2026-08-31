@@ -18,7 +18,7 @@ export const ENTRY_ENVELOPE_MAX_TTL_SECONDS = 300;
 export const ENTRY_ISSUED_AT_MAX_FUTURE_SKEW_SECONDS = 60;
 export const NETWORK_TIMEOUT_MS = 15_000;
 export const HTTP_RESPONSE_MAX_BYTES = 1_048_576;
-export const CLIENT_VERSION = '1.3.3';
+export const CLIENT_VERSION = '1.3.4';
 export const MINIMUM_NODE_VERSION = '22.20.0';
 export const SUPPORTED_PLATFORMS = Object.freeze(['darwin', 'linux']);
 export const CANONICAL_API_ORIGIN = 'https://innerloop-api.neagley-dev.workers.dev';
@@ -1460,7 +1460,7 @@ export async function executeOwnerAction({
   try {
     completed = await sendPreparedOwnerValue({ apiBase, saved: recovery.request, action });
   } catch (error) {
-    if (error?.code === 'invalid_signature_window') {
+    if (['invalid_signature_window', 'invalid_signing_key'].includes(error?.code)) {
       await writePrivateJson(recoveryFile, {
         ...recovery,
         status: 'rejected',

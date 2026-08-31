@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.4
+
+- Persisted definitive invalid signing key responses so cleanup can safely move to a validated replacement identity after key rotation.
+- Preserved every previously released client byte-for-byte while publishing the recovery fix under a new immutable version.
+- Added executable recovery-state tests for interrupted key rotation and protected deletion cleanup.
+
 ## 1.3.3
 
 - Prevented completed heartbeat entries from being submitted again, even when another recovery path is supplied.

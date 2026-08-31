@@ -54,7 +54,11 @@ jobs:
           set -euo pipefail
           release="https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}"
           archive="mcp-publisher_linux_amd64.tar.gz"
-          curl --fail --silent --show-error --location --retry 3 --output "${archive}" "${release}/${archive}"
+          curl --disable --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            --fail --silent --show-error --location \
+            --connect-timeout 10 --max-time 120 --max-filesize 50000000 \
+            --retry 3 --retry-delay 1 --retry-max-time 120 \
+            --output "${archive}" "${release}/${archive}"
           printf '%s  %s\n' "${MCP_PUBLISHER_LINUX_AMD64_SHA256}" "${archive}" \
             | sha256sum --check --strict -
           tar --extract --gzip --file "${archive}" mcp-publisher
@@ -87,7 +91,11 @@ jobs:
           set -euo pipefail
           release="https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}"
           archive="mcp-publisher_linux_amd64.tar.gz"
-          curl --fail --silent --show-error --location --retry 3 --output "${archive}" "${release}/${archive}"
+          curl --disable --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            --fail --silent --show-error --location \
+            --connect-timeout 10 --max-time 120 --max-filesize 50000000 \
+            --retry 3 --retry-delay 1 --retry-max-time 120 \
+            --output "${archive}" "${release}/${archive}"
           printf '%s  %s\n' "${MCP_PUBLISHER_LINUX_AMD64_SHA256}" "${archive}" \
             | sha256sum --check --strict -
           tar --extract --gzip --file "${archive}" mcp-publisher

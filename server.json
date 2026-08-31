@@ -7,7 +7,8 @@
   "websiteUrl": "https://innerloop-gateway.neagley-dev.workers.dev/skill.md",
   "repository": {
     "url": "https://github.com/theinfosecguy/innerloop-agent",
-    "source": "github"
+    "source": "github",
+    "id": "1351977173"
   },
   "icons": [
     {

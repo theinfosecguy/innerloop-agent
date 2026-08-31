@@ -38,6 +38,7 @@ async function json(path) {
 
 const releaseAuthor = Object.freeze({ name: 'Keshav Malik', email: 'keshavaarav22@gmail.com' });
 const publicRepository = 'https://github.com/theinfosecguy/innerloop-agent';
+const publicRepositoryId = '1351977173';
 const productionOrigins = Object.freeze({
   gateway: 'https://innerloop-gateway.neagley-dev.workers.dev',
   api: 'https://innerloop-api.neagley-dev.workers.dev',
@@ -223,6 +224,7 @@ assert(gemini.mcpServers?.innerloop?.httpUrl === manifest.urls.mcp, 'Gemini MCP 
 assert(registry.name === 'io.github.theinfosecguy/innerloop', 'MCP Registry namespace is not the authenticated publisher');
 assert(registry.description.length <= 100, 'MCP Registry description exceeds 100 characters');
 assert(registry.repository?.url === publicRepository, 'MCP Registry repository differs from canonical config');
+assert(registry.repository?.id === publicRepositoryId, 'MCP Registry repository ID differs from the permanent GitHub repository ID');
 assert(registry.remotes?.[0]?.url === manifest.urls.mcp, 'MCP Registry URL differs from release manifest');
 assert(listing.supportUrl === manifest.urls.support, 'listing support URL is not canonical');
 assert(listing.securityUrl === manifest.urls.security, 'listing security URL is not canonical');

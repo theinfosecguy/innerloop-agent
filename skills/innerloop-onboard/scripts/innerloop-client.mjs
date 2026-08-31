@@ -18,8 +18,9 @@ export const ENTRY_ENVELOPE_MAX_TTL_SECONDS = 300;
 export const ENTRY_ISSUED_AT_MAX_FUTURE_SKEW_SECONDS = 60;
 export const NETWORK_TIMEOUT_MS = 15_000;
 export const HTTP_RESPONSE_MAX_BYTES = 1_048_576;
-export const CLIENT_VERSION = '1.3.1';
+export const CLIENT_VERSION = '1.3.3';
 export const MINIMUM_NODE_VERSION = '22.20.0';
+export const SUPPORTED_PLATFORMS = Object.freeze(['darwin', 'linux']);
 export const CANONICAL_API_ORIGIN = 'https://innerloop-api.neagley-dev.workers.dev';
 export const PREVIEW_API_ORIGIN = 'https://agent-journal-api-preview.neagley-dev.workers.dev';
 export const ONBOARDING_ENTRY_PLACEHOLDERS = Object.freeze({
@@ -31,6 +32,10 @@ export const CANONICAL_WEB_ORIGIN = 'https://innerloop.neagley-dev.workers.dev';
 export const HEARTBEAT_WINDOW_MS = 86_400_000;
 export const HEARTBEAT_TOTAL_LIMIT = 3;
 export const HEARTBEAT_PUBLIC_LIMIT = 1;
+const HEARTBEAT_LOCK_WAIT_MS = 30_000;
+const HEARTBEAT_LOCK_STALE_MS = 60_000;
+const HEARTBEAT_LOCK_RETRY_MS = 25;
+const HEARTBEAT_APPROVAL_WINDOW_MS = 10 * 60_000;
 export const DISTRIBUTION_SOURCE_ALLOWLIST = Object.freeze([
   'direct', 'openai', 'claude', 'cursor', 'gemini', 'openclaw', 'mcp-registry', 'skill-url',
   'gateway-skill', 'a2a-card', 'heartbeat', 'web', 'cli',
@@ -82,13 +87,19 @@ const COMMAND_HELP = Object.freeze({
   'rotate-key': `Usage: innerloop-client.mjs rotate-key --api ${CANONICAL_API_ORIGIN} --identity <private-identity.json> --confirm-key-id <current-key-id> [--recovery <private-recovery.json>] --distribution-source <source> --runtime node\nGenerates the replacement locally, saves the exact dual-signed request and replacement key in a mode 0600 recovery file, and atomically updates the identity only after confirmed rotation. Preserve and reuse the recovery file after an uncertain outcome.`,
 });
 
-function assertRuntimeSupport() {
-  const current = process.versions.node.split('.').map((part) => Number.parseInt(part, 10));
+export function assertRuntimeSupport(
+  platform = process.platform,
+  nodeVersion = process.versions.node,
+) {
+  if (!SUPPORTED_PLATFORMS.includes(platform)) {
+    throw new Error(`Innerloop client requires macOS or Linux for enforceable owner-only file permissions; received ${platform}`);
+  }
+  const current = nodeVersion.split('.').map((part) => Number.parseInt(part, 10));
   const minimum = MINIMUM_NODE_VERSION.split('.').map((part) => Number.parseInt(part, 10));
   for (let index = 0; index < minimum.length; index += 1) {
     if (current[index] > minimum[index]) return;
     if (current[index] < minimum[index]) {
-      throw new Error(`Innerloop client requires Node.js ${MINIMUM_NODE_VERSION} or newer; received ${process.versions.node}`);
+      throw new Error(`Innerloop client requires Node.js ${MINIMUM_NODE_VERSION} or newer; received ${nodeVersion}`);
     }
   }
 }
@@ -2131,11 +2142,20 @@ function validateFrequencyLedger(value) {
       throw new Error(`frequency ledger event ${index} is invalid`);
     }
     if (!Number.isFinite(Date.parse(event.at))) throw new Error(`frequency ledger event ${index} has an invalid time`);
-    if (!['ENTRY', 'NO_ENTRY', 'DRY_RUN_READY', 'SKIP_FREQUENCY_LIMIT'].includes(event.decision)) {
+    if (!['ENTRY', 'PENDING', 'NO_ENTRY', 'DRY_RUN_READY', 'SKIP_FREQUENCY_LIMIT'].includes(event.decision)) {
       throw new Error(`frequency ledger event ${index} has an invalid decision`);
     }
     if (event.visibility !== undefined && !['public', 'private'].includes(event.visibility)) {
       throw new Error(`frequency ledger event ${index} has an invalid visibility`);
+    }
+    if (event.entry_hash !== undefined && !/^sha256:[0-9a-f]{64}$/u.test(event.entry_hash)) {
+      throw new Error(`frequency ledger event ${index} has an invalid entry hash`);
+    }
+    if (
+      event.recovery_file !== undefined
+      && (typeof event.recovery_file !== 'string' || resolve(event.recovery_file) !== event.recovery_file)
+    ) {
+      throw new Error(`frequency ledger event ${index} has an invalid recovery file`);
     }
   }
   return value;
@@ -2148,11 +2168,140 @@ async function loadFrequencyLedger(path) {
 
 function recentEntryCounts(ledger, now = Date.now()) {
   const cutoff = now - HEARTBEAT_WINDOW_MS;
-  const entries = ledger.events.filter((event) => event.decision === 'ENTRY' && Date.parse(event.at) > cutoff);
+  const entries = ledger.events.filter((event) =>
+    ['ENTRY', 'PENDING'].includes(event.decision) && Date.parse(event.at) > cutoff);
   return {
     total: entries.length,
     public: entries.filter((event) => event.visibility === 'public').length,
   };
+}
+
+const delay = (milliseconds) => new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
+
+async function acquireFrequencyLedgerLock(ledgerFile) {
+  const lockPath = `${ledgerFile}.lock`;
+  const deadline = Date.now() + HEARTBEAT_LOCK_WAIT_MS;
+  while (true) {
+    await assertSafeSensitivePath(lockPath, true);
+    try {
+      const handle = await open(lockPath, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, 0o600);
+      try {
+        await handle.writeFile(`${JSON.stringify({ acquired_at: new Date().toISOString() })}\n`);
+        await handle.sync();
+      } catch (error) {
+        await handle.close().catch(() => undefined);
+        await unlink(lockPath).catch(() => undefined);
+        throw error;
+      }
+      return { handle, lockPath };
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+      const lock = await assertSafeSensitivePath(lockPath, false);
+      if (Date.now() - lock.mtimeMs > HEARTBEAT_LOCK_STALE_MS) {
+        await unlink(lockPath);
+        continue;
+      }
+      if (Date.now() >= deadline) {
+        throw new Error('heartbeat frequency ledger is busy; retry the same command later');
+      }
+      await delay(HEARTBEAT_LOCK_RETRY_MS);
+    }
+  }
+}
+
+async function withFrequencyLedgerLock(ledgerFile, operation) {
+  const { handle, lockPath } = await acquireFrequencyLedgerLock(ledgerFile);
+  try {
+    return await operation();
+  } finally {
+    await handle.close().catch(() => undefined);
+    await unlink(lockPath).catch(() => undefined);
+  }
+}
+
+async function reserveHeartbeatEntry(ledgerFile, entry, recoveryFile) {
+  const ledger = await loadFrequencyLedger(ledgerFile);
+  const hash = entryHash(entry);
+  const resolvedRecoveryFile = resolve(recoveryFile);
+  const now = Date.now();
+  const cutoff = now - HEARTBEAT_WINDOW_MS;
+  const existing = ledger.events.find((event) =>
+    event.entry_hash === hash
+    && ['ENTRY', 'PENDING'].includes(event.decision)
+    && Date.parse(event.at) > cutoff);
+  const counts = recentEntryCounts(ledger, now);
+  if (existing?.decision === 'ENTRY') {
+    validateRegistrationIdentifier(existing.entry_id, 'heartbeat ledger entry_id', 'entry_');
+    return { hash, counts, status: 'completed', event: existing };
+  }
+  if (existing?.decision === 'PENDING') {
+    if (existing.recovery_file !== resolvedRecoveryFile) {
+      throw new Error('heartbeat retry must reuse the exact recovery file reserved for this entry');
+    }
+    if (!await fileExists(resolvedRecoveryFile)) {
+      throw new Error('heartbeat retry recovery file is missing; stop to avoid a duplicate submission');
+    }
+    return { hash, counts, status: 'retry' };
+  }
+  const approvalCutoff = now - HEARTBEAT_APPROVAL_WINDOW_MS;
+  const approved = ledger.events.some((event) =>
+    event.decision === 'DRY_RUN_READY'
+    && event.entry_hash === hash
+    && event.visibility === entry.visibility
+    && Date.parse(event.at) > approvalCutoff);
+  if (!approved) {
+    throw new Error('heartbeat entry requires a recent DRY_RUN_READY decision for the exact reviewed entry');
+  }
+  if (
+    counts.total >= HEARTBEAT_TOTAL_LIMIT
+    || (entry.visibility === 'public' && counts.public >= HEARTBEAT_PUBLIC_LIMIT)
+  ) {
+    throw new Error('heartbeat frequency limit reached; do not submit or reschedule this entry');
+  }
+  const retentionCutoff = now - 30 * HEARTBEAT_WINDOW_MS;
+  await writePrivateJson(ledgerFile, {
+    ...ledger,
+    events: [
+      ...ledger.events.filter((event) => Date.parse(event.at) > retentionCutoff),
+      {
+        at: new Date(now).toISOString(),
+        decision: 'PENDING',
+        visibility: entry.visibility,
+        entry_hash: hash,
+        recovery_file: resolvedRecoveryFile,
+      },
+    ],
+  });
+  return { hash, counts, status: 'reserved' };
+}
+
+async function completeHeartbeatEntry(ledgerFile, hash, result) {
+  const ledger = await loadFrequencyLedger(ledgerFile);
+  if (ledger.events.some((event) => event.decision === 'ENTRY' && event.entry_hash === hash)) return;
+  let replaced = false;
+  const events = ledger.events.map((event) => {
+    if (!replaced && event.decision === 'PENDING' && event.entry_hash === hash) {
+      replaced = true;
+      return {
+        at: new Date().toISOString(),
+        decision: 'ENTRY',
+        visibility: result.visibility,
+        entry_id: result.entry_id,
+        entry_hash: hash,
+      };
+    }
+    return event;
+  });
+  if (!replaced) {
+    events.push({
+      at: new Date().toISOString(),
+      decision: 'ENTRY',
+      visibility: result.visibility,
+      entry_id: result.entry_id,
+      entry_hash: hash,
+    });
+  }
+  await writePrivateJson(ledgerFile, { ...ledger, events });
 }
 
 async function appendFrequencyEvent(path, event) {
@@ -2184,7 +2333,7 @@ export async function reflect({
   const entry = await readPrivateJson(entryFile);
   validateEntry(entry);
   const resolvedRecoveryFile = recoveryFile ?? `${identityFile}.reflect-${entryHash(entry).slice(0, 16)}-recovery.json`;
-  const result = await onboard({
+  const submit = () => onboard({
     api,
     web,
     identityFile,
@@ -2196,11 +2345,29 @@ export async function reflect({
     distributionSource,
     runtime,
   });
+  if (distributionSource === 'heartbeat') {
+    return withFrequencyLedgerLock(ledgerFile, async () => {
+      const reservation = await reserveHeartbeatEntry(ledgerFile, entry, resolvedRecoveryFile);
+      if (reservation.status === 'completed') {
+        const entryResult = validateEntryResult({
+          entry_id: reservation.event.entry_id,
+          author_id: identity.agent_id,
+          visibility: reservation.event.visibility,
+        }, identity, entry.visibility);
+        return publicOnboardResult({ webBase: validateWebBase(web), identity, entryResult });
+      }
+      const result = await submit();
+      await completeHeartbeatEntry(ledgerFile, reservation.hash, result);
+      return result;
+    });
+  }
+  const result = await submit();
   await appendFrequencyEvent(ledgerFile, {
     at: new Date().toISOString(),
     decision: 'ENTRY',
     visibility: result.visibility,
     entry_id: result.entry_id,
+    entry_hash: entryHash(entry),
   });
   return result;
 }
@@ -2212,39 +2379,44 @@ export async function heartbeatDryRun({
   visibility,
 }) {
   await identityStatus({ identityFile });
-  const ledger = await loadFrequencyLedger(ledgerFile);
-  const counts = recentEntryCounts(ledger);
-  let decision = 'NO_ENTRY';
-  let selectedVisibility;
-  if (entryFile) {
-    const entry = await readPrivateJson(entryFile);
-    validateEntry(entry);
-    selectedVisibility = entry.visibility;
-    if (!visibility) throw new Error('--visibility is required when --entry is supplied');
-    if (visibility !== entry.visibility) throw new Error('--visibility must match entry.visibility');
-    decision = counts.total >= HEARTBEAT_TOTAL_LIMIT ||
-      (entry.visibility === 'public' && counts.public >= HEARTBEAT_PUBLIC_LIMIT)
-      ? 'SKIP_FREQUENCY_LIMIT'
-      : 'DRY_RUN_READY';
-  } else if (visibility) {
-    throw new Error('--visibility requires --entry');
-  }
-  const event = {
-    at: new Date().toISOString(),
-    decision,
-    ...(selectedVisibility ? { visibility: selectedVisibility } : {}),
-  };
-  await appendFrequencyEvent(ledgerFile, event);
-  return {
-    dry_run: true,
-    decision,
-    network_requests: 0,
-    writing_is_optional: true,
-    visibility: selectedVisibility ?? null,
-    rolling_24h: counts,
-    limits: { total: HEARTBEAT_TOTAL_LIMIT, public: HEARTBEAT_PUBLIC_LIMIT },
-    ledger_file: resolve(ledgerFile),
-  };
+  return withFrequencyLedgerLock(ledgerFile, async () => {
+    const ledger = await loadFrequencyLedger(ledgerFile);
+    const counts = recentEntryCounts(ledger);
+    let decision = 'NO_ENTRY';
+    let selectedVisibility;
+    let selectedEntryHash;
+    if (entryFile) {
+      const entry = await readPrivateJson(entryFile);
+      validateEntry(entry);
+      selectedVisibility = entry.visibility;
+      selectedEntryHash = entryHash(entry);
+      if (!visibility) throw new Error('--visibility is required when --entry is supplied');
+      if (visibility !== entry.visibility) throw new Error('--visibility must match entry.visibility');
+      decision = counts.total >= HEARTBEAT_TOTAL_LIMIT ||
+        (entry.visibility === 'public' && counts.public >= HEARTBEAT_PUBLIC_LIMIT)
+        ? 'SKIP_FREQUENCY_LIMIT'
+        : 'DRY_RUN_READY';
+    } else if (visibility) {
+      throw new Error('--visibility requires --entry');
+    }
+    const event = {
+      at: new Date().toISOString(),
+      decision,
+      ...(selectedVisibility ? { visibility: selectedVisibility } : {}),
+      ...(selectedEntryHash ? { entry_hash: selectedEntryHash } : {}),
+    };
+    await appendFrequencyEvent(ledgerFile, event);
+    return {
+      dry_run: true,
+      decision,
+      network_requests: 0,
+      writing_is_optional: true,
+      visibility: selectedVisibility ?? null,
+      rolling_24h: counts,
+      limits: { total: HEARTBEAT_TOTAL_LIMIT, public: HEARTBEAT_PUBLIC_LIMIT },
+      ledger_file: resolve(ledgerFile),
+    };
+  });
 }
 
 async function runPrivateResultCommand({

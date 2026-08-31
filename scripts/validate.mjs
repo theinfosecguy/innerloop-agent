@@ -14,6 +14,14 @@ function hash(value) {
   return createHash('sha256').update(value).digest('hex');
 }
 
+function skillMetadataVersion(source, location) {
+  const frontmatter = source.match(/^---\n([\s\S]*?)\n---(?:\n|$)/u);
+  assert(frontmatter, `${location} is missing YAML frontmatter`);
+  const version = frontmatter[1].match(/^  version:\s*"([^"]+)"\s*$/mu);
+  assert(version, `${location} is missing metadata.version`);
+  return version[1];
+}
+
 async function filesBelow(directory) {
   const files = [];
   for (const entry of await readdir(directory, { withFileTypes: true })) {
@@ -43,7 +51,7 @@ const skillDefinitions = Object.freeze([
 const telemetryAllowlists = Object.freeze({
   sources: ['direct', 'gateway', 'openai', 'claude', 'cursor', 'gemini', 'openclaw', 'gateway-skill', 'mcp-registry', 'skill-url', 'a2a-card', 'heartbeat', 'web', 'cli'],
   runtimes: ['node', 'python', 'cloudflare-worker', 'browser', 'unknown'],
-  clientVersions: ['1.0.0', '1.1.0', '1.2.0', '1.3.0', '1.3.1', 'unknown'],
+  clientVersions: ['1.0.0', '1.1.0', '1.2.0', '1.3.0', '1.3.1', '1.3.2', '1.3.3', 'unknown'],
 });
 
 function assertReleaseAuthor(value, location) {
@@ -70,6 +78,7 @@ assert(packageDocument.private === true, 'distribution package must remain priva
 assert(packageDocument.author === `${releaseAuthor.name} <${releaseAuthor.email}>`, 'distribution package author is inconsistent');
 assert(packageDocument.repository?.url === `${publicRepository}.git`, 'distribution package repository is inconsistent');
 assert(packageDocument.engines?.node === '>=22.20.0', 'distribution package Node.js floor is not canonical');
+assert(JSON.stringify(packageDocument.os) === JSON.stringify(['darwin', 'linux']), 'distribution package must fail closed outside macOS and Linux');
 assert(manifest.version === packageDocument.version, 'release manifest and package versions differ');
 assert(registry.version === packageDocument.version, 'server.json and package versions differ');
 assert(listing.version === packageDocument.version, 'listing.json and package versions differ');
@@ -86,6 +95,15 @@ for (const skill of manifest.skills) {
   const name = skill.frontmatter.name;
   const configured = skillDefinitions.find((candidate) => candidate.name === name);
   assert(configured, `${name} is not in the focused skill set`);
+  const skillSource = await readFile(resolve(root, configured.directory, 'SKILL.md'), 'utf8');
+  assert(
+    skillMetadataVersion(skillSource, skill.uri) === packageDocument.version,
+    `${skill.uri} metadata version differs from package version`,
+  );
+  assert(
+    skillSource.includes('read-only MCP tool and public HTTP interfaces are platform independent'),
+    `${skill.uri} read-only platform boundary is missing`,
+  );
   assert(skill.resources.length === (configured.clientResource ? 4 : 1), `${skill.uri} has an incomplete resource set`);
   const uris = new Set(skill.resources.map((resource) => resource.uri));
   for (const resource of skill.resources) {
@@ -93,9 +111,12 @@ for (const skill of manifest.skills) {
     assert(resource.digest === `sha256:${hash(source)}`, `${resource.uri} digest mismatch`);
     assert(resource.size === source.byteLength, `${resource.uri} size mismatch`);
   }
-  const skillSource = await readFile(resolve(root, configured.directory, 'SKILL.md'), 'utf8');
   if (configured.clientResource) {
-    assert(skillSource.includes('Requires Node.js 22.20.0 or newer'), `${skill.uri} Node.js floor is not canonical`);
+    assert(skillSource.includes('Node.js 22.20.0 or newer'), `${skill.uri} Node.js floor is not canonical`);
+    assert(/requires macOS or Linux/iu.test(skillSource), `${skill.uri} supported platform boundary is missing`);
+    assert(skillSource.includes('outside source control'), `${skill.uri} source-control boundary is missing`);
+    assert(skillSource.includes('installed skill director'), `${skill.uri} install-directory boundary is missing`);
+    assert(skillSource.includes('INNERLOOP_DIR'), `${skill.uri} operator state directory is missing`);
   }
   assert(uris.has(skill.uri), `${skill.uri} is missing SKILL.md`);
   if (configured.clientResource) {

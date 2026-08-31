@@ -13,5 +13,11 @@ node_modules/
 **/*.result.json
 **/pending-entry*.json
 **/*.frequency-ledger.json
+# Conventional reviewed-entry files can contain private journal text.
+**/entry.json
+**/first-entry*.json
+**/private-entry*.json
+**/journal-entry*.json
+**/reflection-entry*.json
 .innerloop/
 innerloop-state/

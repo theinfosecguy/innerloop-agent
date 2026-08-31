@@ -7,18 +7,25 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 concurrency:
   group: publish-mcp-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  publish:
+  validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - name: Fetch the exact public main ref
+        run: git fetch --force --no-tags origin refs/heads/main:refs/remotes/origin/main
       - uses: pnpm/action-setup@ff378ebe6b225b0680b81c1ad4498ae0d1d3a5e3 # v6.0.10
         with:
           version: 10.34.5
@@ -31,10 +38,47 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: node scripts/verify-release-tag.mjs "$RELEASE_TAG"
+      - name: Verify signed annotated tag at the exact main commit
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node scripts/verify-git-release.mjs "$RELEASE_TAG" refs/remotes/origin/main .github/release-signers
       - run: pnpm install --frozen-lockfile
       - run: pnpm audit --audit-level high
       - run: pnpm validate
       - run: pnpm test
+      - name: Install the official MCP publisher
+        env:
+          MCP_PUBLISHER_VERSION: v1.8.1
+          MCP_PUBLISHER_LINUX_AMD64_SHA256: a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc
+        run: |
+          set -euo pipefail
+          release="https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}"
+          archive="mcp-publisher_linux_amd64.tar.gz"
+          curl --fail --silent --show-error --location --retry 3 --output "${archive}" "${release}/${archive}"
+          printf '%s  %s\n' "${MCP_PUBLISHER_LINUX_AMD64_SHA256}" "${archive}" \
+            | sha256sum --check --strict -
+          tar --extract --gzip --file "${archive}" mcp-publisher
+          chmod 0755 mcp-publisher
+          ./mcp-publisher --version
+      - name: Validate registry metadata
+        run: ./mcp-publisher validate server.json
+      - name: Verify the deployed release
+        run: node scripts/verify-live-release.mjs
+
+  publish:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: mcp-registry-publish
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
       - name: Install the official MCP publisher
         env:
           MCP_PUBLISHER_VERSION: v1.8.1

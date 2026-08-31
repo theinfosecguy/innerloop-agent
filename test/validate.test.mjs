@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { generateKeyPairSync } from 'node:crypto';
+import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,13 +29,71 @@ function documentedRootCommands(readme) {
   return match[1].split('\n').map((line) => line.trim()).filter(Boolean);
 }
 
-test('distribution validator executes every integrity gate', () => {
+test('distribution validator executes every integrity gate', async () => {
+  const manifest = JSON.parse(await readFile(resolve(root, 'release-manifest.json'), 'utf8'));
   const result = spawnSync(process.execPath, ['scripts/validate.mjs'], {
     cwd: root,
     encoding: 'utf8',
   });
   assert.equal(result.status, 0, result.stderr || result.stdout);
-  assert.match(result.stdout, /^validated 3 skills, 5 clients, 2 assets, /);
+  assert.match(result.stdout, new RegExp(`^validated 3 skills, ${manifest.clients.length} clients, ${manifest.assets.length} assets, `));
+});
+
+test('package safety defaults keep reviewed entries and secrets outside source control', async () => {
+  const [ignore, readme, onboard, reflect, packageDocument] = await Promise.all([
+    readFile(resolve(root, '.gitignore'), 'utf8'),
+    readFile(resolve(root, 'README.md'), 'utf8'),
+    readFile(resolve(root, 'skills/innerloop-onboard/SKILL.md'), 'utf8'),
+    readFile(resolve(root, 'skills/innerloop-reflect/SKILL.md'), 'utf8'),
+    readFile(resolve(root, 'package.json'), 'utf8').then(JSON.parse),
+  ]);
+
+  for (const pattern of ['**/entry.json', '**/first-entry*.json', '**/private-entry*.json']) {
+    assert.match(ignore, new RegExp(`^${pattern.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&').replace('\\*\\*', '.*').replace('\\*', '.*')}$`, 'mu'));
+  }
+  assert.deepEqual(packageDocument.os, ['darwin', 'linux']);
+  for (const source of [readme, onboard, reflect]) {
+    assert.match(source, /outside source control/iu);
+    assert.match(source, /installed (?:plugin, extension, or )?skill director/iu);
+  }
+  assert.match(onboard, /--identity "\$INNERLOOP_DIR\/identity\.json"/u);
+  assert.doesNotMatch(onboard, /--identity \.\/innerloop-identity\.json/u);
+});
+
+test('focused onboarding status and backup block runs in a fresh shell', async () => {
+  const onboardRoot = resolve(root, 'skills/innerloop-onboard');
+  const onboard = await readFile(resolve(onboardRoot, 'SKILL.md'), 'utf8');
+  const block = [...onboard.matchAll(/```sh\n([\s\S]*?)\n```/gu)]
+    .map((match) => match[1])
+    .find((candidate) => candidate.includes('backup-identity'));
+  assert.ok(block, 'onboarding skill must contain a backup command block');
+  assert.match(block, /^set -eu\n/u);
+
+  const stateRoot = await mkdtemp(resolve(tmpdir(), 'innerloop-focused-backup-'));
+  const innerloopDir = resolve(stateRoot, 'innerloop');
+  try {
+    await mkdir(innerloopDir, { mode: 0o700 });
+    const { privateKey, publicKey } = generateKeyPairSync('ed25519');
+    await writeFile(resolve(innerloopDir, 'identity.json'), `${JSON.stringify({
+      private_key_pkcs8: Buffer.from(privateKey.export({ format: 'der', type: 'pkcs8' })).toString('base64'),
+      public_key_spki: Buffer.from(publicKey.export({ format: 'der', type: 'spki' })).toString('base64'),
+      agent_id: 'agent_focused_backup_test',
+      key_id: 'key_focused_backup_test',
+      display_name: 'Focused Backup Test',
+    })}\n`, { mode: 0o600 });
+
+    const result = spawnSync('sh', ['-c', block], {
+      cwd: onboardRoot,
+      encoding: 'utf8',
+      env: { ...process.env, XDG_STATE_HOME: stateRoot },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /"verified":true/u);
+    assert.match(result.stdout, /"registered":true/u);
+    assert.equal((await stat(resolve(innerloopDir, 'identity.backup.json'))).mode & 0o777, 0o600);
+  } finally {
+    await rm(stateRoot, { recursive: true, force: true });
+  }
 });
 
 test('distribution validator rejects prohibited text through its real lint gate', () => {
@@ -158,6 +217,22 @@ test('standalone package installs, validates, tests, and self-tests without the 
       assert.match(result.stderr, /versions differ/);
       await writeFile(absolutePath, original, 'utf8');
     }
+
+    const focusedSkillPath = resolve(isolatedRoot, 'skills/innerloop-onboard/SKILL.md');
+    const focusedSkillSource = await readFile(focusedSkillPath, 'utf8');
+    await writeFile(
+      focusedSkillPath,
+      focusedSkillSource.replace(/^(  version:) "[^"]+"$/mu, '$1 "0.0.0-version-mismatch"'),
+      'utf8',
+    );
+    const mismatchedSkill = spawnSync('pnpm', ['validate'], {
+      cwd: isolatedRoot,
+      encoding: 'utf8',
+      env: environment,
+    });
+    assert.notEqual(mismatchedSkill.status, 0, 'focused skill metadata version mismatch was accepted');
+    assert.match(mismatchedSkill.stderr, /metadata version differs from package version/);
+    await writeFile(focusedSkillPath, focusedSkillSource, 'utf8');
 
     const releaseManifestPath = resolve(isolatedRoot, 'release-manifest.json');
     const releaseManifestSource = await readFile(releaseManifestPath, 'utf8');

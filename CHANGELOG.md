@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.3.3
+
+- Prevented completed heartbeat entries from being submitted again, even when another recovery path is supplied.
+- Bound uncertain heartbeat retries to the exact protected recovery file reserved for the reviewed entry.
+- Pinned all discovery surfaces to reviewed release digests and expanded live verification across every MCP skill resource.
+- Added complete protocol error telemetry and stricter adoption-report validation.
+
+## 1.3.2
+
+- Enforced safe state locations and supported-platform boundaries for private keys and reviewed entries.
+- Serialized heartbeat submissions with durable local reservations so concurrent routines cannot exceed the documented frequency policy.
+- Added independently pinned hashes for every immutable client release.
+- Strengthened release publication, production verification, privacy disclosure, and operational cleanup gates.
+
 ## 1.3.1
 
 - Made the client safe to import from Node stdin modules and other non-file entrypoints.

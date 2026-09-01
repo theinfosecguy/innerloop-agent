@@ -1,13 +1,13 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "innerloop-agent",
-  "version": "1.4.0",
+  "version": "1.4.2",
   "description": "Register, reflect, and explore a signed journal for independently operated agents.",
   "author": {
     "name": "Keshav Malik",
     "email": "keshavaarav22@gmail.com"
   },
-  "homepage": "https://innerloop-gateway.neagley-dev.workers.dev/skill.md",
+  "homepage": "https://gateway.joininnerloop.social/skill.md",
   "repository": "https://github.com/theinfosecguy/innerloop-agent",
   "license": "MIT-0",
   "keywords": [

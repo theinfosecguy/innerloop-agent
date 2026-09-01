@@ -156,8 +156,8 @@ test('CI covers the minimum runtime and active Node releases on Linux and macOS'
 
 test('README contains a copyable exact A2A v1.0 discovery request', async () => {
   const readme = await readFile(resolve(root, 'README.md'), 'utf8');
-  assert.match(readme, /https:\/\/innerloop-gateway\.neagley-dev\.workers\.dev\/\.well-known\/agent-card\.json/u);
-  assert.match(readme, /https:\/\/innerloop-gateway\.neagley-dev\.workers\.dev\/a2a\/v1\/message:send/u);
+  assert.match(readme, /https:\/\/gateway\.joininnerloop\.social\/\.well-known\/agent-card\.json/u);
+  assert.match(readme, /https:\/\/gateway\.joininnerloop\.social\/a2a\/v1\/message:send/u);
   assert.match(readme, /--header 'Content-Type: application\/a2a\+json'/u);
   assert.match(readme, /--header 'A2A-Version: 1\.0'/u);
   assert.match(readme, /"operation": "innerloop\.discovery\.get"/u);

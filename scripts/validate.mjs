@@ -41,9 +41,9 @@ const releaseAuthor = Object.freeze({ name: 'Keshav Malik', email: 'keshavaarav2
 const publicRepository = 'https://github.com/theinfosecguy/innerloop-agent';
 const publicRepositoryId = '1351977173';
 const productionOrigins = Object.freeze({
-  gateway: 'https://innerloop-gateway.neagley-dev.workers.dev',
-  api: 'https://innerloop-api.neagley-dev.workers.dev',
-  web: 'https://innerloop.neagley-dev.workers.dev',
+  gateway: 'https://gateway.joininnerloop.social',
+  api: 'https://api.joininnerloop.social',
+  web: 'https://joininnerloop.social',
 });
 const skillDefinitions = Object.freeze([
   { name: 'innerloop-onboard', directory: 'skills/innerloop-onboard', clientResource: true },
@@ -53,7 +53,7 @@ const skillDefinitions = Object.freeze([
 const telemetryAllowlists = Object.freeze({
   sources: ['direct', 'gateway', 'openai', 'claude', 'cursor', 'gemini', 'openclaw', 'gateway-skill', 'mcp-registry', 'skill-url', 'a2a-card', 'heartbeat', 'web', 'cli'],
   runtimes: ['node', 'python', 'cloudflare-worker', 'browser', 'unknown'],
-  clientVersions: ['1.0.0', '1.1.0', '1.2.0', '1.3.0', '1.3.1', '1.3.2', '1.3.3', '1.3.4', '1.4.0', 'unknown'],
+  clientVersions: ['1.0.0', '1.1.0', '1.2.0', '1.3.0', '1.3.1', '1.3.2', '1.3.3', '1.3.4', '1.4.0', '1.4.1', '1.4.2', 'unknown'],
 });
 
 function assertReleaseAuthor(value, location) {
@@ -73,7 +73,8 @@ function localResourcePath(skillName, uri) {
 }
 
 const packageDocument = await json('package.json');
-const manifest = await json('release-manifest.json');
+const manifestSource = await readFile(resolve(root, 'release-manifest.json'), 'utf8');
+const manifest = JSON.parse(manifestSource);
 const registry = await json('server.json');
 const listing = await json('listing.json');
 assert(packageDocument.private === true, 'distribution package must remain private until publication is intentional');
@@ -87,10 +88,30 @@ assert(listing.version === packageDocument.version, 'listing.json and package ve
 assert(manifest.urls.gateway === productionOrigins.gateway, 'production gateway URL is not canonical');
 assert(manifest.urls.api === productionOrigins.api, 'production API URL is not canonical');
 assert(manifest.urls.web === productionOrigins.web, 'production web URL is not canonical');
+assert(!manifestSource.includes('.preview.'), 'public release manifest exposes an internal validation origin');
 assert(manifest.protocols.mcp.skillsExtension === 'io.modelcontextprotocol/skills', 'MCP skills extension is missing');
 assert(manifest.skills.length === skillDefinitions.length, 'exactly three focused skills are required');
+assert(manifest.clients.length === 1, 'exactly one current client may be distributed');
 const currentClient = manifest.clients.find((client) => client.version === manifest.bundledClient.version);
 assert(currentClient?.released === true, 'the bundled production client must be frozen before distribution validation');
+assert(currentClient?.apiOrigin === productionOrigins.api, 'the bundled client API origin is not canonical');
+assert(!Object.hasOwn(currentClient, 'validationApiOrigins'), 'public client metadata exposes internal validation origins');
+assert(
+  Array.isArray(manifest.retiredClientDigests) && manifest.retiredClientDigests.length === 10,
+  'retired client digest history is incomplete',
+);
+const retiredVersions = new Set();
+for (const retired of manifest.retiredClientDigests) {
+  assert(
+    JSON.stringify(Object.keys(retired).sort()) === JSON.stringify(['sha256', 'version']),
+    `retired client ${retired?.version ?? 'unknown'} must be hash-only metadata`,
+  );
+  assert(/^[0-9]+\.[0-9]+\.[0-9]+$/.test(retired.version), `retired client ${retired.version} version is invalid`);
+  assert(/^[a-f0-9]{64}$/.test(retired.sha256), `retired client ${retired.version} digest is malformed`);
+  assert(!retiredVersions.has(retired.version), `duplicate retired client ${retired.version}`);
+  assert(retired.version !== currentClient.version, `current client ${retired.version} cannot be retired`);
+  retiredVersions.add(retired.version);
+}
 assert(manifest.skills.map((skill) => skill.frontmatter.name).sort().join(',') === skillDefinitions.map((skill) => skill.name).sort().join(','), 'focused skill set is inconsistent');
 
 for (const skill of manifest.skills) {
@@ -184,8 +205,8 @@ for (const args of [
 for (const client of manifest.clients) {
   assert(/^\/[a-z0-9./-]+$/.test(client.path), `${client.path} client path is unsafe`);
   assert(/^[a-f0-9]{64}$/.test(client.sha256), `${client.path} digest is malformed`);
-  assert(client.apiOrigin.startsWith('https://'), `${client.path} API origin is unsafe`);
-  assert(Array.isArray(client.validationApiOrigins) && client.validationApiOrigins.every((origin) => origin.startsWith('https://')), `${client.path} validation origins are unsafe`);
+  assert(client.apiOrigin === productionOrigins.api, `${client.path} API origin is not canonical`);
+  assert(!Object.hasOwn(client, 'validationApiOrigins'), `${client.path} exposes internal validation origins`);
 }
 
 assert(manifest.assets.map((asset) => asset.path).sort().join(',') === 'assets/innerloop-mark.svg,assets/marketplace-icon.png', 'release assets are incomplete');
@@ -346,6 +367,8 @@ for (const field of ['agentId', 'entryId', 'keyId', 'publicKey', 'displayName', 
 const textExtensions = new Set(['.json', '.md', '.mjs', '.svg', '.txt', '.yaml', '.yml']);
 const prohibitedProduct = ['co', 'dex'].join('');
 const unresolved = [['RE', 'PLACE_'].join(''), ['TO', 'DO'].join(''), ['T', 'BD'].join('')];
+const retiredPlatformOrigin = ['workers', 'dev'].join('.');
+const retiredPreviewSymbol = ['PREVIEW', 'API', 'ORIGIN'].join('_');
 const files = await filesBelow(root);
 for (const file of files) {
   const name = relative(root, file);
@@ -354,6 +377,8 @@ for (const file of files) {
   const source = await readFile(file, 'utf8');
   assert(!source.includes('\u2014'), `${name} contains an em dash`);
   assert(!source.toLowerCase().includes(prohibitedProduct), `${name} contains prohibited product-specific text`);
+  assert(!source.includes(retiredPlatformOrigin), `${name} contains a retired platform origin`);
+  assert(!source.includes(retiredPreviewSymbol), `${name} contains a retired preview-origin symbol`);
   assert(!unresolved.some((fragment) => source.includes(fragment)), `${name} contains an unresolved placeholder`);
 }
 const validationProbe = process.env.INNERLOOP_VALIDATOR_PROBE;

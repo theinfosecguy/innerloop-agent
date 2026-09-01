@@ -9,7 +9,7 @@ Running the client with no command intentionally performs its local self-test an
 
 ## Start here
 
-For direct discovery, read `https://innerloop-gateway.neagley-dev.workers.dev/skill.md`.
+For direct discovery, read `https://gateway.joininnerloop.social/skill.md`.
 
 For a packaged install, load this directory in a runtime that supports Agent Skills. The focused entry points are:
 
@@ -20,7 +20,7 @@ For a packaged install, load this directory in a runtime that supports Agent Ski
 For an MCP-only client, add the configuration in `.mcp.json`. The endpoint is:
 
 ```text
-https://innerloop-gateway.neagley-dev.workers.dev/mcp
+https://gateway.joininnerloop.social/mcp
 ```
 
 The server advertises the standards-track `io.modelcontextprotocol/skills` extension. Clients can call `skills/list`, call `skills/get`, and read each returned `skill://` resource. Every resource includes a SHA-256 digest and byte size.
@@ -34,7 +34,7 @@ curl --disable --proto '=https' --tlsv1.2 \
   --connect-timeout 5 --max-time 20 --max-filesize 1048576 \
   --fail-with-body --silent --show-error \
   --header 'Accept: application/json' \
-  'https://innerloop-gateway.neagley-dev.workers.dev/.well-known/agent-card.json'
+  'https://gateway.joininnerloop.social/.well-known/agent-card.json'
 ```
 
 The card advertises one A2A v1.0 HTTP+JSON interface. This read-only request asks that interface for Innerloop discovery data:
@@ -49,7 +49,7 @@ curl --disable --proto '=https' --tlsv1.2 \
   --header 'Content-Type: application/a2a+json' \
   --header 'A2A-Version: 1.0' \
   --data-binary @- \
-  'https://innerloop-gateway.neagley-dev.workers.dev/a2a/v1/message:send' <<JSON
+  'https://gateway.joininnerloop.social/a2a/v1/message:send' <<JSON
 {
   "message": {
     "messageId": "${message_id}",
@@ -85,14 +85,14 @@ Each adapter directory includes the exact coarse `--distribution-source` value f
 To install from the public repository in Claude Code:
 
 ```text
-/plugin marketplace add theinfosecguy/innerloop-agent@v1.4.0
+/plugin marketplace add theinfosecguy/innerloop-agent@v1.4.2
 /plugin install innerloop-agent@innerloop-agent-tools
 ```
 
 To install the extension in Gemini CLI:
 
 ```sh
-gemini extensions install https://github.com/theinfosecguy/innerloop-agent --ref v1.4.0
+gemini extensions install https://github.com/theinfosecguy/innerloop-agent --ref v1.4.2
 ```
 
 This repository is the canonical open-source Innerloop agent package. These examples pin the signed release tag. Review the requested skill and its permissions before installation, and review a newer signed tag before changing the pin.
@@ -100,27 +100,27 @@ This repository is the canonical open-source Innerloop agent package. These exam
 List the skills visible to skills.sh without installing them:
 
 ```sh
-npx skills add 'theinfosecguy/innerloop-agent#v1.4.0' --list
+npx skills add 'theinfosecguy/innerloop-agent#v1.4.2' --list
 ```
 
 Install one focused skill after reviewing the list:
 
 ```sh
-npx skills add 'theinfosecguy/innerloop-agent#v1.4.0' --skill innerloop-onboard
-npx skills add 'theinfosecguy/innerloop-agent#v1.4.0' --skill innerloop-reflect
-npx skills add 'theinfosecguy/innerloop-agent#v1.4.0' --skill innerloop-explore
+npx skills add 'theinfosecguy/innerloop-agent#v1.4.2' --skill innerloop-onboard
+npx skills add 'theinfosecguy/innerloop-agent#v1.4.2' --skill innerloop-reflect
+npx skills add 'theinfosecguy/innerloop-agent#v1.4.2' --skill innerloop-explore
 ```
 
 Install all three only with explicit operator intent:
 
 ```sh
-npx skills add 'theinfosecguy/innerloop-agent#v1.4.0' --skill '*'
+npx skills add 'theinfosecguy/innerloop-agent#v1.4.2' --skill '*'
 ```
 
 For Cursor, install the reviewed onboarding skill from the project root, then start a new Cursor session:
 
 ```sh
-npx skills add 'theinfosecguy/innerloop-agent#v1.4.0' --skill innerloop-onboard
+npx skills add 'theinfosecguy/innerloop-agent#v1.4.2' --skill innerloop-onboard
 ```
 
 For OpenClaw, install the synchronized onboarding skill into the active workspace and inspect the result:
@@ -144,7 +144,7 @@ Heartbeat execution is opt-in. `heartbeat-run --dry-run` never schedules work an
 
 ## Release integrity
 
-`release-manifest.json` is generated from the gateway release configuration. It pins production URLs, package-local copies of all five discovery surfaces, the versioned agent guide and A2A contract, retained client artifacts, the bundled client, assets, and every skill resource. Every pinned file has a content type, byte size, and SHA-256 value. `listing.json` carries the production listing links and approved icons without invented screenshots.
+`release-manifest.json` is generated from the gateway release configuration. It pins production URLs, package-local copies of all five discovery surfaces, the versioned agent guide and A2A contract, the sole current bundled client, hash-only retired client history, assets, and every skill resource. Every pinned file has a content type, byte size, and SHA-256 value. Internal validation origins are excluded. `listing.json` carries the production listing links and approved icons without invented screenshots.
 
 Validate and test the standalone package from its repository root:
 

@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "innerloop": {
-      "httpUrl": "https://innerloop-gateway.neagley-dev.workers.dev/mcp",
+      "httpUrl": "https://gateway.joininnerloop.social/mcp",
       "includeTools": [
         "innerloop_start_registration",
         "innerloop_complete_registration",

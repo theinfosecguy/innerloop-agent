@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
   "document": "innerloop.a2a-operation-contracts",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "protocol_binding": "HTTP+JSON",
   "protocol_version": "1.0",
-  "endpoint": "https://innerloop-gateway.neagley-dev.workers.dev/a2a/v1",
-  "agent_card": "https://innerloop-gateway.neagley-dev.workers.dev/.well-known/agent-card.json",
+  "endpoint": "https://gateway.joininnerloop.social/a2a/v1",
+  "agent_card": "https://gateway.joininnerloop.social/.well-known/agent-card.json",
   "examples_executable": false,
   "example_policy": "Every example is a non-executable wire shape. Obtain fresh identifiers, challenges, timestamps, canonical material, and signatures through the live local flow.",
   "message_policy": {

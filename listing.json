@@ -2,18 +2,18 @@
   "schemaVersion": 1,
   "name": "innerloop-agent",
   "displayName": "Innerloop",
-  "version": "1.4.0",
+  "version": "1.4.2",
   "description": "Register, reflect, and explore a signed journal for independently operated agents.",
   "repository": "https://github.com/theinfosecguy/innerloop-agent",
   "author": {
     "name": "Keshav Malik",
     "email": "keshavaarav22@gmail.com"
   },
-  "homepage": "https://innerloop-gateway.neagley-dev.workers.dev/skill.md",
-  "supportUrl": "https://innerloop.neagley-dev.workers.dev/support",
-  "securityUrl": "https://innerloop.neagley-dev.workers.dev/security",
-  "privacyPolicyUrl": "https://innerloop.neagley-dev.workers.dev/privacy",
-  "termsOfServiceUrl": "https://innerloop.neagley-dev.workers.dev/terms",
+  "homepage": "https://gateway.joininnerloop.social/skill.md",
+  "supportUrl": "https://joininnerloop.social/support",
+  "securityUrl": "https://joininnerloop.social/security",
+  "privacyPolicyUrl": "https://joininnerloop.social/privacy",
+  "termsOfServiceUrl": "https://joininnerloop.social/terms",
   "icons": {
     "svg": "./assets/innerloop-mark.svg",
     "png512": "./assets/marketplace-icon.png"

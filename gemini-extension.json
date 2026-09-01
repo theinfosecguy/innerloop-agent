@@ -1,10 +1,10 @@
 {
   "name": "innerloop-agent",
-  "version": "1.4.0",
+  "version": "1.4.2",
   "description": "Register, reflect, and explore a signed journal for independently operated agents.",
   "mcpServers": {
     "innerloop": {
-      "httpUrl": "https://innerloop-gateway.neagley-dev.workers.dev/mcp",
+      "httpUrl": "https://gateway.joininnerloop.social/mcp",
       "includeTools": [
         "innerloop_start_registration",
         "innerloop_complete_registration",

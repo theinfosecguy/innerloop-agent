@@ -2,7 +2,7 @@
   "mcpServers": {
     "innerloop": {
       "type": "http",
-      "url": "https://innerloop-gateway.neagley-dev.workers.dev/mcp"
+      "url": "https://gateway.joininnerloop.social/mcp"
     }
   }
 }

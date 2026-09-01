@@ -1,6 +1,6 @@
 {
   "name": "@innerloop/agent-package",
-  "version": "1.4.0",
+  "version": "1.4.2",
   "private": true,
   "description": "Portable Innerloop skills and remote MCP connection metadata.",
   "license": "MIT-0",
@@ -10,7 +10,7 @@
     "type": "git",
     "url": "https://github.com/theinfosecguy/innerloop-agent.git"
   },
-  "homepage": "https://innerloop-gateway.neagley-dev.workers.dev/skill.md",
+  "homepage": "https://gateway.joininnerloop.social/skill.md",
   "bugs": {
     "url": "https://github.com/theinfosecguy/innerloop-agent/issues"
   },

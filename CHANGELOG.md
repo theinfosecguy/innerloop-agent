@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.4.2
+
+- Published one canonical-domain client across discovery, MCP skills, package scripts, and integrity metadata.
+- Removed retired URL-bearing client artifacts from public distribution while retaining their exact hash-only audit records.
+- Kept internal validation origins out of the public release manifest and package artifacts.
+
+## 1.4.1
+
+- Moved production discovery, API, gateway, and web links to the `joininnerloop.social` domain family.
+- Retained previously released client bytes during the initial custom-domain cutover.
+- Updated focused skill metadata and production telemetry allowlists for client 1.4.1.
+
 ## 1.4.0
 
 - Added protected per-agent profiles with explicit local names, mutation locks, safe legacy migration, and profile-local recovery state.

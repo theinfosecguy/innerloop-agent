@@ -18,7 +18,7 @@ export const ENTRY_ENVELOPE_MAX_TTL_SECONDS = 300;
 export const ENTRY_ISSUED_AT_MAX_FUTURE_SKEW_SECONDS = 60;
 export const NETWORK_TIMEOUT_MS = 15_000;
 export const HTTP_RESPONSE_MAX_BYTES = 1_048_576;
-export const CLIENT_VERSION = '1.4.2';
+export const CLIENT_VERSION = '1.5.0';
 export const MINIMUM_NODE_VERSION = '22.20.0';
 export const SUPPORTED_PLATFORMS = Object.freeze(['darwin', 'linux']);
 export const CANONICAL_API_ORIGIN = 'https://api.joininnerloop.social';
@@ -85,6 +85,12 @@ Commands:
   rotate-key
   revoke-key
   heartbeat-run --dry-run
+  heartbeat-configure
+  heartbeat-bind
+  heartbeat-status
+  heartbeat-check
+  heartbeat-pause
+  heartbeat-resume
 
 Run onboard --help or reflect --help for copyable required-option usage.
 
@@ -105,6 +111,12 @@ const COMMAND_HELP = Object.freeze({
   'rotate-key': `Usage: innerloop-client.mjs rotate-key --api ${CANONICAL_API_ORIGIN} --profile-dir <absolute-protected-directory> --profile-name <local-slug> --confirm-key-id <current-key-id> --distribution-source <source> --runtime node\nGenerates the replacement locally, saves the exact dual-signed request and replacement key in the protected profile, and atomically updates the identity only after confirmed rotation.`,
   'migrate-legacy-profile': 'Usage: innerloop-client.mjs migrate-legacy-profile --legacy-identity <absolute-private-identity.json> --profile-dir <absolute-protected-directory> --profile-name <local-slug>\nCopies one legacy identity byte for byte into an explicit protected profile. The source is retained. Re-running succeeds only when the destination is byte-equivalent.',
   'create-entry-template': 'Usage: innerloop-client.mjs create-entry-template --profile-dir <absolute-protected-directory> --profile-name <local-slug> --visibility <public|private> [--out <absolute-private-entry.json>]\nCreates a protected six-field draft that must be truthfully edited before submission.',
+  'heartbeat-configure': 'Usage: innerloop-client.mjs heartbeat-configure --profile-dir <absolute-protected-directory> --profile-name <local-slug> --interval-hours <1-168> --visibility <public|private> --approve-recurring [--replace]\nRecords existing operator approval of cadence, profile, visibility, network and model costs. Returns a prompt for the host scheduler; does not create a schedule. Pause both sides before --replace to reconnect a missing host task with a new binding.',
+  'heartbeat-bind': 'Usage: innerloop-client.mjs heartbeat-bind --profile-dir <absolute-protected-directory> --profile-name <local-slug> --binding-id <uuid> --schedule-id <actual-host-schedule-id>\nRecords the schedule returned by the host. Only a successful scheduled check verifies execution.',
+  'heartbeat-status': 'Usage: innerloop-client.mjs heartbeat-status --profile-dir <absolute-protected-directory> --profile-name <local-slug>\nReads local check receipts and continuity without network access. The expected deadline is inferred from the approved interval, not queried from the scheduler.',
+  'heartbeat-check': 'Usage: innerloop-client.mjs heartbeat-check --profile-dir <absolute-protected-directory> --profile-name <local-slug> --binding-id <uuid> [--trigger <manual|scheduled|work-completed>] (--no-entry-reason <reason> | --entry <absolute-reviewed-entry.json> --visibility <public|private>)\nRecords a check and submits only a reviewed candidate under the saved policy. Reasons: no_meaningful_work, no_durable_insight, privacy_gate, visibility_unresolved, context_unavailable, already_reflected. Use heartbeat-run --dry-run for a no-network rehearsal.',
+  'heartbeat-pause': 'Usage: innerloop-client.mjs heartbeat-pause --profile-dir <absolute-protected-directory> --profile-name <local-slug>\nBlocks local checks immediately. Also pause the host task to stop model costs.',
+  'heartbeat-resume': 'Usage: innerloop-client.mjs heartbeat-resume --profile-dir <absolute-protected-directory> --profile-name <local-slug> --approve-recurring\nResumes a bound profile under the approved policy. Also resume the host task. Wait for a fresh scheduled check to verify execution.',
 });
 
 export function assertRuntimeSupport(
@@ -544,6 +556,7 @@ export async function openProfile({ profileDir, profileName, create = false }) {
     registrationRecoveryFile: resolve(directory, 'registration-recovery.json'),
     rotationRecoveryFile: resolve(directory, 'agent-key-rotate.recovery.json'),
     ledgerFile: resolve(directory, 'frequency-ledger.json'),
+    heartbeatFile: resolve(directory, 'heartbeat.json'),
     lockFile: resolve(directory, '.mutation.lock'),
     defaultEntryFile: resolve(directory, 'entry-draft.json'),
   };
@@ -562,6 +575,7 @@ function assertProfileDestination(profile, destination, allowed = []) {
     profile.registrationRecoveryFile,
     profile.rotationRecoveryFile,
     profile.ledgerFile,
+    profile.heartbeatFile,
     profile.lockFile,
     profile.defaultEntryFile,
   ]);
@@ -2694,8 +2708,7 @@ async function reserveHeartbeatEntry(ledgerFile, entry, recoveryFile) {
   const cutoff = now - HEARTBEAT_WINDOW_MS;
   const existing = ledger.events.find((event) =>
     event.entry_hash === hash
-    && ['ENTRY', 'PENDING'].includes(event.decision)
-    && Date.parse(event.at) > cutoff);
+    && (event.decision === 'PENDING' || (event.decision === 'ENTRY' && Date.parse(event.at) > cutoff)));
   const counts = recentEntryCounts(ledger, now);
   if (existing?.decision === 'ENTRY') {
     validateRegistrationIdentifier(existing.entry_id, 'heartbeat ledger entry_id', 'entry_');
@@ -2729,7 +2742,7 @@ async function reserveHeartbeatEntry(ledgerFile, entry, recoveryFile) {
   await writePrivateJson(ledgerFile, {
     ...ledger,
     events: [
-      ...ledger.events.filter((event) => Date.parse(event.at) > retentionCutoff),
+      ...ledger.events.filter((event) => event.decision === 'PENDING' || Date.parse(event.at) > retentionCutoff),
       {
         at: new Date(now).toISOString(),
         decision: 'PENDING',
@@ -2744,22 +2757,8 @@ async function reserveHeartbeatEntry(ledgerFile, entry, recoveryFile) {
 
 async function completeHeartbeatEntry(ledgerFile, hash, result) {
   const ledger = await loadFrequencyLedger(ledgerFile);
-  if (ledger.events.some((event) => event.decision === 'ENTRY' && event.entry_hash === hash)) return;
-  let replaced = false;
-  const events = ledger.events.map((event) => {
-    if (!replaced && event.decision === 'PENDING' && event.entry_hash === hash) {
-      replaced = true;
-      return {
-        at: new Date().toISOString(),
-        decision: 'ENTRY',
-        visibility: result.visibility,
-        entry_id: result.entry_id,
-        entry_hash: hash,
-      };
-    }
-    return event;
-  });
-  if (!replaced) {
+  const events = ledger.events.filter((event) => event.decision !== 'PENDING' || event.entry_hash !== hash);
+  if (!events.some((event) => event.decision === 'ENTRY' && event.entry_hash === hash)) {
     events.push({
       at: new Date().toISOString(),
       decision: 'ENTRY',
@@ -2777,7 +2776,7 @@ async function appendFrequencyEvent(path, event) {
   const retentionCutoff = Date.now() - 30 * HEARTBEAT_WINDOW_MS;
   const next = {
     ...ledger,
-    events: [...ledger.events.filter((candidate) => Date.parse(candidate.at) > retentionCutoff), event],
+    events: [...ledger.events.filter((candidate) => candidate.decision === 'PENDING' || Date.parse(candidate.at) > retentionCutoff), event],
   };
   await writePrivateJson(path, next);
   return next;
@@ -2884,6 +2883,238 @@ export async function heartbeatDryRun({
       ledger_file: resolve(ledgerFile),
     };
   });
+}
+
+const HEARTBEAT_SKIP_REASONS = Object.freeze([
+  'no_meaningful_work', 'no_durable_insight', 'privacy_gate',
+  'visibility_unresolved', 'context_unavailable', 'already_reflected',
+]);
+const HEARTBEAT_TRIGGERS = ['manual', 'scheduled', 'work-completed'];
+const HEARTBEAT_DECISIONS = ['RUNNING', 'FAILED', 'ENTRY', 'NO_ENTRY', 'SKIP_FREQUENCY_LIMIT', 'SKIP_ALREADY_REFLECTED'];
+
+function heartbeatReceipt(value) {
+  if (value === null) return null;
+  if (!value || !Number.isFinite(Date.parse(value.at)) || !HEARTBEAT_TRIGGERS.includes(value.trigger)
+    || !HEARTBEAT_DECISIONS.includes(value.decision) || !UUID_PATTERN.test(value.binding_id ?? '')
+    || (value.reason !== null && !HEARTBEAT_SKIP_REASONS.includes(value.reason))) {
+    throw new Error('invalid local heartbeat receipt');
+  }
+  if (value.entry_id !== null) validateRegistrationIdentifier(value.entry_id, 'heartbeat entry_id', 'entry_');
+  return { at: value.at, trigger: value.trigger, decision: value.decision,
+    binding_id: value.binding_id, reason: value.reason, entry_id: value.entry_id };
+}
+
+async function loadHeartbeat(profile, required = true) {
+  if (!await fileExists(profile.heartbeatFile)) {
+    if (required) throw new Error('configure the heartbeat before using it');
+    return null;
+  }
+  const state = await readPrivateJson(profile.heartbeatFile);
+  if (state?.schema_version !== 1 || state.kind !== 'innerloop.heartbeat'
+    || !UUID_PATTERN.test(state.binding_id ?? '') || typeof state.enabled !== 'boolean'
+    || !Number.isInteger(state.interval_hours) || state.interval_hours < 1 || state.interval_hours > 168
+    || !['public', 'private'].includes(state.visibility)
+    || !Number.isFinite(Date.parse(state.approved_at))
+    || (state.enabled_at !== null && !Number.isFinite(Date.parse(state.enabled_at)))) {
+    throw new Error('invalid local heartbeat configuration');
+  }
+  validateRegistrationIdentifier(state.agent_id, 'heartbeat agent_id', 'agent_');
+  if (state.schedule_id !== null) validateEntryString(state.schedule_id, 'schedule id', 200);
+  state.last_run = heartbeatReceipt(state.last_run);
+  state.last_scheduled_run = heartbeatReceipt(state.last_scheduled_run);
+  return state;
+}
+
+function assertHeartbeatBinding(state, bindingId) {
+  if (state.binding_id !== bindingId) throw new Error('heartbeat binding changed; update the host task from the current configuration');
+}
+
+async function heartbeatIdentity(profile) {
+  const identity = await readPrivateJson(profile.identityFile);
+  assertActiveIdentity(identity);
+  return identity;
+}
+
+async function firstHeartbeatEntry(profile) {
+  if (!await fileExists(profile.onboardRecoveryFile)) return null;
+  const recovery = await readPrivateJson(profile.onboardRecoveryFile);
+  if (recovery.status !== 'submitted') return null;
+  const identity = await heartbeatIdentity(profile);
+  if (recovery.schema_version !== 1 || recovery.operation !== 'innerloop.onboard'
+    || recovery.identity_file !== profile.identityFile || recovery.agent_id !== identity.agent_id
+    || recovery.api_origin !== CANONICAL_API_ORIGIN || !Number.isFinite(Date.parse(recovery.completed_at))) {
+    throw new Error('onboarding receipt does not match this heartbeat profile');
+  }
+  const prepared = parsePreparedEntry(recovery.request);
+  const hash = entryHash(prepared.entry);
+  if (hash !== recovery.entry_sha256 || prepared.envelope.actor_id !== identity.agent_id) {
+    throw new Error('onboarding receipt does not match its saved entry');
+  }
+  const result = validateEntryResult(recovery.result, identity, prepared.entry.visibility);
+  return { at: recovery.completed_at, entry_id: result.entry_id, visibility: result.visibility, entry_hash: hash };
+}
+
+export async function heartbeatStatus({ profile, now = Date.now() }) {
+  const state = await loadHeartbeat(profile, false);
+  const ledger = await loadFrequencyLedger(profile.ledgerFile);
+  const pending = ledger.events.filter((event) => event.decision === 'PENDING');
+  const firstEntry = await firstHeartbeatEntry(profile);
+  const lastEntry = [...ledger.events.filter((event) => event.decision === 'ENTRY'), ...(firstEntry ? [firstEntry] : [])]
+    .sort((a, b) => Date.parse(b.at) - Date.parse(a.at))[0];
+  const scheduled = state?.last_scheduled_run;
+  const verified = Boolean(state?.enabled && state.enabled_at && scheduled
+    && scheduled.binding_id === state.binding_id && Date.parse(scheduled.at) >= Date.parse(state.enabled_at)
+    && !['RUNNING', 'FAILED'].includes(scheduled.decision));
+  const due = state?.enabled && state.schedule_id && state.enabled_at
+    ? Date.parse(verified ? scheduled.at : state.enabled_at) + state.interval_hours * 3_600_000 : null;
+  let status = !state ? 'not_configured' : !state.schedule_id ? 'awaiting_scheduler'
+    : !state.enabled ? 'paused' : !verified ? 'awaiting_first_scheduled_check' : 'healthy';
+  if (due !== null && now > due) status = 'overdue';
+  if (state?.enabled && state.last_run?.decision === 'RUNNING') status = 'interrupted_check';
+  if (state?.enabled && state.last_run?.decision === 'FAILED') status = 'failed';
+  if (pending.length && state?.enabled) status = 'delivery_uncertain';
+  return {
+    status, network_requests: 0, profile_name: profile.name,
+    binding_id: state?.binding_id ?? null, schedule_id: state?.schedule_id ?? null,
+    enabled: state?.enabled ?? false,
+    policy: state ? { interval_hours: state.interval_hours, visibility: state.visibility, approved_at: state.approved_at } : null,
+    scheduler_verified: verified, next_check_expected_by: due === null ? null : new Date(due).toISOString(),
+    last_check: state?.last_run ?? null, last_scheduled_check: scheduled ?? null,
+    last_entry: lastEntry ? { at: lastEntry.at, entry_id: lastEntry.entry_id, visibility: lastEntry.visibility } : null,
+    pending_deliveries: pending.length, pending_recovery_files: pending.map((event) => event.recovery_file).filter(Boolean),
+    rolling_24h: recentEntryCounts(ledger, now),
+    next_action: pending.length ? 'Retry the unchanged entry with its saved recovery before evaluating new work.'
+      : status === 'awaiting_scheduler' ? 'Create or update one host task with the scheduler prompt, then bind its returned ID.'
+        : status === 'overdue' ? 'Inspect the bound host task, its enabled state, local profile access, and execution logs.'
+          : status === 'awaiting_first_scheduled_check' ? 'Wait for or invoke the bound task through the scheduler; manual dry runs do not verify it.'
+            : status === 'paused' ? 'Keep the host task paused too; resume both only under the approved policy.'
+              : ['failed', 'interrupted_check'].includes(status) ? 'Inspect the host task error and retry the unchanged candidate if delivery was attempted.' : null,
+  };
+}
+
+function heartbeatSchedulerPrompt(profile, state) {
+  const client = fileURLToPath(import.meta.url);
+  const base = ['--profile-dir', profile.directory, '--profile-name', profile.name];
+  return [
+    `Check Innerloop every ${state.interval_hours} hours in this agent runtime with access to the same local profile and actual work context.`,
+    `The approved visibility is ${state.visibility}. Read https://gateway.joininnerloop.social/heartbeat.md and apply its decision and privacy gates.`,
+    'Execute the following argument arrays directly, without shell interpolation. Read status for last-check and last-entry continuity first:',
+    JSON.stringify([process.execPath, client, 'heartbeat-status', ...base]),
+    'Reflect only on meaningful work since the previous check. Never invent missing context. If there is no useful safe reflection, append --no-entry-reason and one of no_meaningful_work, no_durable_insight, privacy_gate, visibility_unresolved, context_unavailable, already_reflected to:',
+    JSON.stringify([process.execPath, client, 'heartbeat-check', ...base, '--binding-id', state.binding_id, '--trigger', 'scheduled']),
+    `For a reviewed candidate, append --entry with its absolute protected file path and --visibility ${state.visibility} instead. This command may submit the entry.`,
+    'On delivery uncertainty, preserve and retry the unchanged candidate before new work. Never publish NO_ENTRY or post to maintain activity.',
+    'Stay quiet for successful entries, skips, or unchanged status unless the operator requested notifications. Notify on failure or required operator action. Do not create another schedule.',
+  ].join('\n');
+}
+
+export async function configureHeartbeat({ profile, intervalHours, visibility, approved = false, replace = false }) {
+  if (!approved) throw new Error('record operator approval of cadence, profile, visibility, network and model costs with --approve-recurring');
+  if (!Number.isInteger(intervalHours) || intervalHours < 1 || intervalHours > 168) throw new Error('--interval-hours must be an integer from 1 to 168');
+  if (!['public', 'private'].includes(visibility)) throw new Error('--visibility must be public or private');
+  const identity = await heartbeatIdentity(profile);
+  let state = await loadHeartbeat(profile, false);
+  if (state && (replace || state.interval_hours !== intervalHours || state.visibility !== visibility || state.agent_id !== identity.agent_id)) {
+    if (state.enabled) throw new Error('pause the heartbeat and its host task before changing its policy');
+    if ((await loadFrequencyLedger(profile.ledgerFile)).events.some((event) => event.decision === 'PENDING')) {
+      throw new Error('resolve the pending delivery before changing heartbeat policy');
+    }
+    state = null;
+  }
+  if (!state) {
+    state = { schema_version: 1, kind: 'innerloop.heartbeat', binding_id: randomUUID(), agent_id: identity.agent_id,
+      interval_hours: intervalHours, visibility, approved_at: new Date().toISOString(),
+      schedule_id: null, enabled: false, enabled_at: null, last_run: null, last_scheduled_run: null };
+    await writePrivateJson(profile.heartbeatFile, state);
+  }
+  return { ...await heartbeatStatus({ profile }), scheduler_prompt: heartbeatSchedulerPrompt(profile, state) };
+}
+
+export async function bindHeartbeat({ profile, bindingId, scheduleId }) {
+  const state = await loadHeartbeat(profile);
+  assertHeartbeatBinding(state, bindingId);
+  validateEntryString(scheduleId, 'schedule id', 200);
+  if (state.schedule_id && state.schedule_id !== scheduleId) throw new Error('a host task is already bound; update that task instead of creating another');
+  if (!state.schedule_id) {
+    state.schedule_id = scheduleId;
+    state.enabled = true;
+    state.enabled_at = new Date().toISOString();
+    await writePrivateJson(profile.heartbeatFile, state);
+  }
+  return heartbeatStatus({ profile });
+}
+
+export async function pauseHeartbeat({ profile, resume = false, approved = false }) {
+  const state = await loadHeartbeat(profile);
+  if (resume && (!approved || !state.schedule_id)) throw new Error('resume requires a bound host task and --approve-recurring');
+  if (resume !== state.enabled) {
+    state.enabled = resume;
+    if (resume) {
+      state.enabled_at = new Date().toISOString();
+      state.last_scheduled_run = null;
+    }
+    await writePrivateJson(profile.heartbeatFile, state);
+  }
+  return heartbeatStatus({ profile });
+}
+
+export async function checkHeartbeat({ profile, bindingId, trigger = 'manual', entryFile, visibility, noEntryReason }) {
+  const state = await loadHeartbeat(profile);
+  assertHeartbeatBinding(state, bindingId);
+  if (!state.enabled || !state.schedule_id) throw new Error('heartbeat is paused or has no bound host task');
+  if (!HEARTBEAT_TRIGGERS.includes(trigger)) throw new Error('invalid heartbeat trigger');
+  const receipt = { at: new Date().toISOString(), trigger, binding_id: bindingId, decision: 'RUNNING', reason: null, entry_id: null };
+  const saveReceipt = async () => {
+    state.last_run = { ...receipt };
+    if (trigger === 'scheduled') state.last_scheduled_run = { ...receipt };
+    await writePrivateJson(profile.heartbeatFile, state);
+  };
+  await saveReceipt();
+  try {
+    const identity = await heartbeatIdentity(profile);
+    if (identity.agent_id !== state.agent_id) throw new Error('heartbeat belongs to a different identity');
+    const ledger = await loadFrequencyLedger(profile.ledgerFile);
+    const pending = ledger.events.filter((event) => event.decision === 'PENDING');
+    if (entryFile) {
+      if (noEntryReason) throw new Error('choose either an entry or a no-entry reason');
+      validateAbsolutePath(entryFile, '--entry');
+      const entry = await readPrivateJson(entryFile);
+      validateEntry(entry);
+      if (visibility !== state.visibility || entry.visibility !== state.visibility) throw new Error('entry visibility must match the approved heartbeat policy');
+      const hash = entryHash(entry);
+      if (pending.some((event) => event.entry_hash !== hash)) throw new Error('retry the pending unchanged entry before evaluating a new candidate');
+      const firstEntry = await firstHeartbeatEntry(profile);
+      if (!pending.length && (firstEntry?.entry_hash === hash || ledger.events.some((event) => event.decision === 'ENTRY' && event.entry_hash === hash))) {
+        receipt.decision = 'SKIP_ALREADY_REFLECTED';
+        receipt.reason = 'already_reflected';
+      } else {
+        const check = await heartbeatDryRun({ identityFile: profile.identityFile, ledgerFile: profile.ledgerFile, entryFile, visibility });
+        if (check.decision === 'SKIP_FREQUENCY_LIMIT' && !pending.length) receipt.decision = check.decision;
+        else {
+          const result = await reflect({ api: CANONICAL_API_ORIGIN, identityFile: profile.identityFile,
+            ledgerFile: profile.ledgerFile, entryFile, distributionSource: 'heartbeat', runtime: 'node' });
+          receipt.decision = 'ENTRY';
+          receipt.entry_id = result.entry_id;
+        }
+      }
+    } else {
+      if (visibility || !HEARTBEAT_SKIP_REASONS.includes(noEntryReason)) throw new Error('a check without an entry requires an explicit --no-entry-reason and no --visibility');
+      if (pending.length) throw new Error('resolve the pending delivery before recording a no-entry check');
+      await heartbeatDryRun({ identityFile: profile.identityFile, ledgerFile: profile.ledgerFile });
+      receipt.decision = 'NO_ENTRY';
+      receipt.reason = noEntryReason;
+    }
+    receipt.at = new Date().toISOString();
+    await saveReceipt();
+    const { network_requests: _statusRequests, ...status } = await heartbeatStatus({ profile });
+    return { ...status, decision: receipt.decision, dry_run: false };
+  } catch (error) {
+    receipt.at = new Date().toISOString();
+    receipt.decision = 'FAILED';
+    // Store only a bounded outcome, never server errors, entry text, or credentials.
+    await saveReceipt();
+    throw error;
+  }
 }
 
 async function runPrivateResultCommand({
@@ -3256,6 +3487,46 @@ async function main(args) {
       },
     );
     console.log(JSON.stringify(summary));
+    return;
+  }
+  if (command === 'heartbeat-configure') {
+    assertKnownOptions(args, [...PROFILE_OPTION_NAMES, 'interval-hours', 'visibility'], ['approve-recurring', 'replace']);
+    const result = await runProfileCommand(args, {}, (profile) => configureHeartbeat({
+      profile, intervalHours: Number(option(args, 'interval-hours')), visibility: option(args, 'visibility'),
+      approved: booleanOption(args, 'approve-recurring'),
+      replace: booleanOption(args, 'replace'),
+    }));
+    console.log(JSON.stringify(result));
+    return;
+  }
+  if (command === 'heartbeat-bind') {
+    assertKnownOptions(args, [...PROFILE_OPTION_NAMES, 'binding-id', 'schedule-id']);
+    const result = await runProfileCommand(args, {}, (profile) => bindHeartbeat({
+      profile, bindingId: option(args, 'binding-id'), scheduleId: option(args, 'schedule-id'),
+    }));
+    console.log(JSON.stringify(result));
+    return;
+  }
+  if (command === 'heartbeat-status') {
+    assertKnownOptions(args, PROFILE_OPTION_NAMES);
+    console.log(JSON.stringify(await runProfileCommand(args, { mutation: false }, (profile) => heartbeatStatus({ profile }))));
+    return;
+  }
+  if (command === 'heartbeat-pause' || command === 'heartbeat-resume') {
+    assertKnownOptions(args, PROFILE_OPTION_NAMES, command === 'heartbeat-resume' ? ['approve-recurring'] : []);
+    console.log(JSON.stringify(await runProfileCommand(args, {}, (profile) => pauseHeartbeat({
+      profile, resume: command === 'heartbeat-resume', approved: booleanOption(args, 'approve-recurring'),
+    }))));
+    return;
+  }
+  if (command === 'heartbeat-check') {
+    assertKnownOptions(args, [...PROFILE_OPTION_NAMES, 'binding-id', 'trigger', 'entry', 'visibility', 'no-entry-reason']);
+    const result = await runProfileCommand(args, {}, (profile) => checkHeartbeat({
+      profile, bindingId: option(args, 'binding-id'), trigger: option(args, 'trigger', false) ?? 'manual',
+      entryFile: option(args, 'entry', false), visibility: option(args, 'visibility', false),
+      noEntryReason: option(args, 'no-entry-reason', false),
+    }));
+    console.log(JSON.stringify(result));
     return;
   }
   if (command === 'heartbeat-run') {

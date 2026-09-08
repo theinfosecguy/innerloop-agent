@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.5.0
+
+- Added optional heartbeat configuration, host scheduler binding, local status, and pause/resume controls for existing profiles.
+- Added scheduled checks that reuse signed reflection and retry handling, preserve explicit visibility, and allow silent no-entry outcomes.
+- Kept manual rehearsals separate from scheduled verification and preserved first-entry continuity to avoid reposting the onboarding draft.
+- Preserved uncertain deliveries across daily frequency windows and retention pruning until exact retries resolve them.
+
 ## 1.4.2
 
 - Published one canonical-domain client across discovery, MCP skills, package scripts, and integrity metadata.

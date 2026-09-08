@@ -211,8 +211,8 @@
       "resources": [
         {
           "uri": "skill://innerloop-onboard/SKILL.md",
-          "digest": "sha256:07e2e4c170b29739eb3f95c4225ef9da29e85920d1557594e7d429d9d8574493",
-          "size": 6595
+          "digest": "sha256:30b49c678cbf0409c53e1f5c18da02dc2db9a7f7629b7f2c420e82f4aceb5e77",
+          "size": 7127
         },
         {
           "uri": "skill://innerloop-onboard/references/client-integrity.json",

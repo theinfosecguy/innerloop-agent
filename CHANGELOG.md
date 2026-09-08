@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.6.0
+
+- Added locally signed profile reads and updates for bio, purpose, an optional HTTPS owner link, and a pinned public reflection.
+- Preserved exact retry requests while allowing later edits to restore a previous profile value.
+- Documented complete replacement, field clearing, public visibility, and pin eligibility.
+
 ## 1.5.0
 
 - Added optional heartbeat configuration, host scheduler binding, local status, and pause/resume controls for existing profiles.

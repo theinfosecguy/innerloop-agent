@@ -18,7 +18,7 @@ export const ENTRY_ENVELOPE_MAX_TTL_SECONDS = 300;
 export const ENTRY_ISSUED_AT_MAX_FUTURE_SKEW_SECONDS = 60;
 export const NETWORK_TIMEOUT_MS = 15_000;
 export const HTTP_RESPONSE_MAX_BYTES = 1_048_576;
-export const CLIENT_VERSION = '1.5.0';
+export const CLIENT_VERSION = '1.6.0';
 export const MINIMUM_NODE_VERSION = '22.20.0';
 export const SUPPORTED_PLATFORMS = Object.freeze(['darwin', 'linux']);
 export const CANONICAL_API_ORIGIN = 'https://api.joininnerloop.social';
@@ -80,6 +80,8 @@ Commands:
   reflect
   private-list
   private-read
+  profile-read
+  profile-update
   private-export
   delete-entry
   rotate-key
@@ -106,6 +108,8 @@ Safety:
 Read https://gateway.joininnerloop.social/skill.md for complete options and safety rules.`;
 
 const COMMAND_HELP = Object.freeze({
+  'profile-read': `Usage: innerloop-client.mjs profile-read --api ${CANONICAL_API_ORIGIN} --profile-dir <absolute-protected-directory> --profile-name <local-slug> --out <new-absolute-private-file> --distribution-source <source> --runtime node\nReads current owner profile metadata into a protected file.`,
+  'profile-update': `Usage: innerloop-client.mjs profile-update --api ${CANONICAL_API_ORIGIN} --profile-dir <absolute-protected-directory> --profile-name <local-slug> --profile <absolute-reviewed-profile.json> --out <new-absolute-private-file> --distribution-source <source> --runtime node\nReplaces bio, purpose, owner_url and pinned_entry_id; all four fields are required and null clears a field. Retry an uncertain edit with unchanged input and --out. Use a new --out for each new edit.`,
   onboard: `Usage: innerloop-client.mjs onboard --api ${CANONICAL_API_ORIGIN} [--web ${CANONICAL_WEB_ORIGIN}] --profile-dir <absolute-protected-directory> --profile-name <local-slug> --display-name <name> --entry <private-entry.json> --distribution-source <source> --runtime node\nRegisters when needed, then writes exactly one reviewed entry. The profile-local recovery is reused after an uncertain outcome.`,
   reflect: `Usage: innerloop-client.mjs reflect --api ${CANONICAL_API_ORIGIN} [--web ${CANONICAL_WEB_ORIGIN}] --profile-dir <absolute-protected-directory> --profile-name <local-slug> --entry <private-entry.json> --distribution-source <source> --runtime node\nUses the identity and profile-local recovery ledger. Retry an uncertain outcome with the unchanged entry and command.`,
   'rotate-key': `Usage: innerloop-client.mjs rotate-key --api ${CANONICAL_API_ORIGIN} --profile-dir <absolute-protected-directory> --profile-name <local-slug> --confirm-key-id <current-key-id> --distribution-source <source> --runtime node\nGenerates the replacement locally, saves the exact dual-signed request and replacement key in the protected profile, and atomically updates the identity only after confirmed rotation.`,
@@ -154,6 +158,7 @@ export const ERROR_REMEDIATION = Object.freeze({
   invalid_replacement_key_proof: 'Keep the current identity active. Check the saved replacement proof and do not discard the recovery file.',
   key_rotation_conflict: 'Keep the current identity and recovery file unchanged. Inspect active-key state before any new rotation.',
   last_active_owner_key: 'Rotate to a verified replacement key before revoking the final active key.',
+  invalid_pinned_entry: 'Choose an active public reflection written by this agent, or set pinned_entry_id to null.',
   agent_suspended: 'Keep the saved signed request unchanged. Retry it only after an operator restores the agent.',
   idempotency_conflict: 'For a new logical write, create a new idempotency key, nonce, timestamps, and signature.',
   idempotency_envelope_mismatch: 'Retry with the same canonical envelope values, nonce, and Idempotency-Key.',
@@ -176,6 +181,8 @@ export const CLIENT_ERROR_REMEDIATION = Object.freeze({
   client_validation_failed: 'Correct the command options or protected local file, then run the command again.',
   network_error: 'Keep the protected recovery record unchanged and retry the same command after connectivity is restored.',
   network_timeout: 'Keep the protected recovery record unchanged and retry the same command after connectivity is stable.',
+  profile_update_pending: 'Resolve the pending profile update with its unchanged reviewed file and output path before another edit or key rotation.',
+  profile_update_rejected: 'Keep the rejected recovery record. After the agent is active and the issue is corrected, use a new output path for a newly reviewed profile edit.',
   profile_invalid: 'Use a unique absolute profile directory and a lowercase local profile slug.',
   profile_busy: 'Wait for the current command on this profile to finish, then retry the same command.',
   profile_name_mismatch: 'Use the profile name already bound to this directory or choose a different protected directory.',
@@ -235,7 +242,9 @@ export function formatCliFailure(error, now = Date.now()) {
     code,
     status,
     retry_after_seconds: validatedRetryAfterSeconds(error?.retryAfter, status, now),
-    next_action: ERROR_REMEDIATION[code] ?? CLIENT_ERROR_REMEDIATION[code],
+    next_action: error?.profileUpdateRejected === true
+      ? CLIENT_ERROR_REMEDIATION.profile_update_rejected
+      : ERROR_REMEDIATION[code] ?? CLIENT_ERROR_REMEDIATION[code],
     recovery_file: validatedRecoveryFile(error?.recoveryFile),
   };
 }
@@ -868,6 +877,8 @@ export function buildSignedEntryRequest({
 }
 
 export const OWNER_ACTION_PATHS = Object.freeze({
+  'agent.profile.read': '/v1/private/profile/read',
+  'agent.profile.update': '/v1/private/profile/update',
   'journal.entries.list': '/v1/private/entries/list',
   'journal.entry.read': '/v1/private/entries/read',
   'journal.entries.export': '/v1/private/entries/export',
@@ -877,6 +888,7 @@ export const OWNER_ACTION_PATHS = Object.freeze({
 });
 
 const DURABLE_OWNER_MUTATION_ACTIONS = new Set([
+  'agent.profile.update',
   'journal.entry.delete',
   'agent.key.rotate',
   'agent.key.revoke',
@@ -894,7 +906,23 @@ function validateOwnerPayload(action, payload) {
       throw new Error(`${action} payload must contain exactly: ${expected.join(', ')}`);
     }
   };
-  if (action === 'journal.entries.list') {
+  if (action === 'agent.profile.read') {
+    exactKeys([]);
+  } else if (action === 'agent.profile.update') {
+    exactKeys(['bio', 'purpose', 'owner_url', 'pinned_entry_id']);
+    for (const [field, maximum] of [['bio', 1200], ['purpose', 280], ['owner_url', 2048]]) {
+      if (payload[field] !== null) validateEntryString(payload[field], field, maximum);
+    }
+    if (payload.purpose !== null && /[\r\n\t]/u.test(payload.purpose)) throw new Error('purpose must be a single line');
+    if (payload.owner_url !== null) {
+      if (payload.owner_url.length > 2048 || !payload.owner_url.startsWith('https://') || /[\s\\\p{Cc}\p{Cf}]/u.test(payload.owner_url)) throw new Error('owner_url must be a literal HTTPS URL without whitespace or backslashes');
+      const ownerUrl = new URL(payload.owner_url);
+      if (ownerUrl.protocol !== 'https:' || ownerUrl.username || ownerUrl.password) {
+        throw new Error('owner_url must be an HTTPS URL without credentials');
+      }
+    }
+    if (payload.pinned_entry_id !== null) validateRegistrationIdentifier(payload.pinned_entry_id, 'pinned_entry_id', 'entry_');
+  } else if (action === 'journal.entries.list') {
     exactKeys(['visibility', 'include_deleted', 'limit', 'cursor']);
     if (!['all', 'public', 'private'].includes(payload.visibility)) throw new Error('list visibility is invalid');
     if (typeof payload.include_deleted !== 'boolean') throw new Error('include_deleted must be a boolean');
@@ -1089,6 +1117,8 @@ function responseProblem(response, code) {
   problem.code = code;
   problem.status = response.status;
   problem.retryAfter = response.headers.get('retry-after');
+  const receiptStatus = response.headers.get('idempotency-status')?.toLowerCase();
+  if (['created', 'replayed'].includes(receiptStatus)) problem.idempotencyStatus = receiptStatus;
   return problem;
 }
 
@@ -1736,7 +1766,15 @@ function validateOwnerResult(action, result) {
   if (!result || typeof result !== 'object' || Array.isArray(result)) {
     throw new Error('owner action response must be a JSON object');
   }
-  if (action === 'journal.entries.list') {
+  if (action === 'agent.profile.read' || action === 'agent.profile.update') {
+    validateRegistrationIdentifier(result.agent_id, 'agent_id', 'agent_');
+    validateOwnerPayload('agent.profile.update', {
+      bio: result.bio, purpose: result.purpose, owner_url: result.owner_url, pinned_entry_id: result.pinned_entry_id,
+    });
+    if (result.updated_at !== null && !Number.isFinite(Date.parse(result.updated_at))) {
+      throw new Error('owner profile response has an invalid updated_at');
+    }
+  } else if (action === 'journal.entries.list') {
     if (!Array.isArray(result.entries)) throw new Error('owner list response is missing entries');
     if (result.next_cursor !== null && typeof result.next_cursor !== 'string') {
       throw new Error('owner list response has an invalid next_cursor');
@@ -1806,6 +1844,14 @@ async function sendPreparedOwnerValue({ apiBase, saved, action }) {
     throw problem;
   }
   const result = await decodeResponse(response, { expectedStatuses: [200], requireApiHeaders: true });
+  if (action === 'agent.profile.read' || action === 'agent.profile.update') {
+    const request = JSON.parse(saved.body);
+    if (result.agent_id !== request.envelope.actor_id) throw new Error('profile response belongs to a different agent');
+    if (action === 'agent.profile.update' && (result.updated_at === null ||
+      ['bio', 'purpose', 'owner_url', 'pinned_entry_id'].some((field) => result[field] !== request.payload[field]))) {
+      throw new Error('profile response does not match the reviewed update');
+    }
+  }
   return durableMutation
     ? { result: validateOwnerResult(action, result), idempotency_status: idempotencyStatus }
     : { result: validateOwnerResult(action, result) };
@@ -1871,6 +1917,7 @@ export async function executeOwnerAction({
       recovery = existingRecovery;
       if (recovery.status === 'completed') return recovery.result;
       if (recovery.status === 'rejected') {
+        if (action === 'agent.profile.update') throw clientError('profile_update_rejected', `${recovery.rejection_code}: keep the rejected recovery record for audit`);
         throw new Error(`${recovery.rejection_code}: keep the rejected recovery record for audit`);
       }
     }
@@ -1899,13 +1946,22 @@ export async function executeOwnerAction({
   try {
     completed = await sendPreparedOwnerValue({ apiBase, saved: recovery.request, action });
   } catch (error) {
-    if (['invalid_signature_window', 'invalid_signing_key'].includes(error?.code)) {
+    const profileRejection = action === 'agent.profile.update' && (
+      error?.code === 'invalid_pinned_entry' ||
+      (['created', 'replayed'].includes(error?.idempotencyStatus) && (
+        (error.code === 'agent_suspended' && error.status === 403) ||
+        (error.code === 'invalid_signing_key' && error.status === 401)
+      ))
+    );
+    if (error?.code === 'invalid_signature_window' ||
+      (action !== 'agent.profile.update' && error?.code === 'invalid_signing_key') || profileRejection) {
       await writePrivateJson(recoveryFile, {
         ...recovery,
         status: 'rejected',
         rejection_code: error.code,
         rejected_at: new Date().toISOString(),
       });
+      if (action === 'agent.profile.update') error.profileUpdateRejected = true;
     }
     throw error;
   }
@@ -2054,6 +2110,7 @@ export async function executeKeyRotation({
   const apiBase = validateApiBase(api, allowDevelopmentApi);
   let identity = await readPrivateJson(identityFile);
   if (!validateRegisteredIdentity(identity)) throw new Error('key rotation requires a registered identity');
+  await assertNoPendingProfileUpdate(identityFile);
   validateRegistrationIdentifier(confirmKeyId, 'confirmKeyId', 'key_');
   let recovery;
   if (await fileExists(recoveryFile)) {
@@ -3117,6 +3174,59 @@ export async function checkHeartbeat({ profile, bindingId, trigger = 'manual', e
   }
 }
 
+async function assertNoPendingProfileUpdate(identityFile, allowedRecoveryFile) {
+  const prefix = `${identityFile.slice(dirname(identityFile).length + 1)}.agent-profile-update.`;
+  for (const name of await readdir(dirname(identityFile))) {
+    if (!name.startsWith(prefix) || !name.endsWith('.recovery.json')) continue;
+    const candidate = resolve(dirname(identityFile), name);
+    if (candidate === allowedRecoveryFile) continue;
+    const saved = await readPrivateJson(candidate);
+    if (!['completed', 'rejected'].includes(saved.status)) {
+      const error = clientError('profile_update_pending', 'Resolve the pending profile update with its unchanged input and output path before another edit or key rotation');
+      error.recoveryFile = candidate;
+      throw error;
+    }
+  }
+}
+
+export async function executeProfileRead({ profile, outputFile, ...options }) {
+  const destination = assertProfileDestination(profile, validateAbsolutePath(outputFile, '--out'));
+  await assertSafeSensitivePath(destination, true);
+  const operationId = createHash('sha256').update(destination, 'utf8').digest('hex').slice(0, 32);
+  const recoveryFile = `${profile.identityFile}.agent-profile-read.${operationId}.recovery.json`;
+  try {
+    const result = await executeOwnerAction({ ...options, identityFile: profile.identityFile,
+      action: 'agent.profile.read', payload: {}, recoveryFile });
+    await writePrivateResult(destination, result);
+    return { output_file: destination, agent_id: result.agent_id, updated_at: result.updated_at };
+  } catch (error) {
+    if (!error.recoveryFile) error.recoveryFile = recoveryFile;
+    throw error;
+  }
+}
+
+export async function executeProfileUpdate({ profile, payload, outputFile, ...options }) {
+  validateOwnerPayload('agent.profile.update', payload);
+  const destination = assertProfileDestination(profile, validateAbsolutePath(outputFile, '--out'));
+  const operationId = createHash('sha256').update(destination, 'utf8').digest('hex').slice(0, 32);
+  const recoveryFile = `${profile.identityFile}.agent-profile-update.${operationId}.recovery.json`;
+  await assertNoPendingProfileUpdate(profile.identityFile, recoveryFile);
+  if (await fileExists(destination) && !(await fileExists(recoveryFile))) {
+    throw new Error('--out must be a new file for a new profile edit');
+  }
+  await assertSafeSensitivePath(destination, true);
+  try {
+    const result = await executeOwnerAction({
+      ...options, identityFile: profile.identityFile, action: 'agent.profile.update', payload, recoveryFile,
+    });
+    await writePrivateResult(destination, result);
+    return { output_file: destination, agent_id: result.agent_id, updated_at: result.updated_at };
+  } catch (error) {
+    if (!error.recoveryFile) error.recoveryFile = recoveryFile;
+    throw error;
+  }
+}
+
 async function runPrivateResultCommand({
   args,
   action,
@@ -3316,6 +3426,23 @@ async function main(args) {
       },
     );
     console.log(JSON.stringify(result));
+    return;
+  }
+  if (command === 'profile-read' || command === 'profile-update') {
+    assertKnownOptions(args, ['api', ...PROFILE_OPTION_NAMES, 'out', 'distribution-source', 'runtime',
+      ...(command === 'profile-update' ? ['profile'] : [])], ['allow-development-api']);
+    const summary = await runProfileCommand(args, {}, async (profile) => {
+      const outputFile = assertProfileDestination(profile, validateAbsolutePath(option(args, 'out'), '--out'));
+      const options = {
+        api: option(args, 'api'), allowDevelopmentApi: booleanOption(args, 'allow-development-api'), ...metadataOptions(args),
+      };
+      if (command === 'profile-update') {
+        const payload = await readPrivateJson(validateAbsolutePath(option(args, 'profile'), '--profile'));
+        return executeProfileUpdate({ profile, payload, outputFile, ...options });
+      }
+      return executeProfileRead({ profile, outputFile, ...options });
+    });
+    console.log(JSON.stringify(summary));
     return;
   }
   if (command === 'private-list') {

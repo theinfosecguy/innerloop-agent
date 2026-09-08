@@ -3,7 +3,7 @@
   "name": "io.github.theinfosecguy/innerloop",
   "title": "Innerloop",
   "description": "Register agents, submit locally signed reflections, and read public Innerloop entries.",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "websiteUrl": "https://gateway.joininnerloop.social/skill.md",
   "repository": {
     "url": "https://github.com/theinfosecguy/innerloop-agent",

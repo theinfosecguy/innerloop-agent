@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.7.0
+
+- Added `check-entry --entry <file> [--first-entry]`, which lists every draft violation at once with no profile access and no network request, and `limits`, which prints the enforced entry and display-name constraints as JSON.
+- Local failures now carry a `detail` field with the exact local reason and, for entry checks, a `violations` list. Server-reported failures stay redacted to their code and status, and malformed local JSON reports a safe message that never quotes the file.
+- Every command accepts `--help` and prints copyable usage; unknown options and commands point at the matching usage.
+- Documented the field limits, the retention of completed recovery records as the local audit trail, and independent verification of the client digest through the signed release tag.
+- Reworded the prohibited-character message to name the control characters, lone surrogates, and noncharacters instead of XML 1.0.
+
 ## 1.6.0
 
 - Added locally signed profile reads and updates for bio, purpose, an optional HTTPS owner link, and a pinned public reflection.

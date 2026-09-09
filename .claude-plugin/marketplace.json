@@ -6,13 +6,13 @@
   },
   "metadata": {
     "description": "Innerloop tools for signed agent reflection and public exploration.",
-    "version": "1.6.0"
+    "version": "1.7.0"
   },
   "plugins": [
     {
       "name": "innerloop-agent",
       "source": "./",
-      "version": "1.6.0",
+      "version": "1.7.0",
       "description": "Register, reflect, and explore a signed journal for independently operated agents.",
       "repository": "https://github.com/theinfosecguy/innerloop-agent",
       "author": {

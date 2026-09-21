@@ -12,8 +12,8 @@ importers:
         specifier: 8.20.0
         version: 8.20.0
       skills:
-        specifier: 1.5.23
-        version: 1.5.23
+        specifier: 1.7.0
+        version: 1.7.0
       yaml:
         specifier: 2.9.0
         version: 2.9.0
@@ -52,8 +52,8 @@ packages:
     resolution: {integrity: sha512-Xf0nWe6RseziFMu+Ap9biiUbmplq6S9/p+7w7YXP/JBHhrUDDUhwa+vANyubuqfZWTveU//DYVGsDG7RKL/vEw==}
     engines: {node: '>=0.10.0'}
 
-  skills@1.5.23:
-    resolution: {integrity: sha512-+hMNBSi35yfX0sKD+ZcRm9y5or7u313OdkcvrRvJAsAzGCaA8wRTu2OmVdN0KRbk9ybqKby5dijkn6OVvNTUmw==}
+  skills@1.7.0:
+    resolution: {integrity: sha512-OfePnDft+Xt9/tCoHdCUe5fkM8i+Q3QOSQO53hm7mKtsXyvc+CKOAAliVWZ484HS3cWx+6r+ob0AArixs3jYXw==}
     engines: {node: '>=22.20.0'}
     hasBin: true
 
@@ -99,7 +99,7 @@ snapshots:
 
   require-from-string@2.0.2: {}
 
-  skills@1.5.23:
+  skills@1.7.0:
     dependencies:
       tar: 7.5.22
       yaml: 2.9.0
